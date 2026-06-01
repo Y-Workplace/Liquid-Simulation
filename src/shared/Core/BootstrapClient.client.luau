@@ -3,14 +3,11 @@ local EventTree = require(ReplicatedStorage.Packages.EventTree)
 local Registry = require(ReplicatedStorage.Packages.Registry)
 
 local boots = {
-	{ domain = "Camera", serviceName = "CameraClient" },
-	{ domain = "GridManager", serviceName = "GridManagerClient" },
-	{ domain = "Movement", serviceName = "MovementClient" },
-	{ domain = "ContextMenu", serviceName = "ContextMenuClient" },
-	{ domain = "Explorer", serviceName = "ExplorerClient" },
-	{ domain = "Editor", serviceName = "EditorClient" },
-	{ domain = "Properties", serviceName = "PropertiesClient" },
-  { domain = "Tools", serviceName = "ToolsClient" },
+  { domain = "Core", serviceName = "CoreClient" },
+	{ domain = "LensFlare", serviceName = "LensFlareClient" },
+  { domain = "Movement", serviceName = "MovementClient" },
+  { domain = "Camera", serviceName = "CameraClient" },
+  { domain = "Gameplay", serviceName = "GameplayClient" },
 }
 
 for _, boot in ipairs(boots) do

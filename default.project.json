@@ -7,6 +7,9 @@
       "Packages": {
         "$path": "Packages"
       },
+      "DirectPackages": {
+        "$path": "src/DirectPackages"
+      },
       "Shared": {
         "$path": "src/shared"
       },
