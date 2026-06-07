@@ -99,7 +99,7 @@ return {
 		{ root = "Packages|_Index|y-workplace_registry@1.0.0|registry", path = { "wally" } },
 		{ root = "Packages|_Index|y-workplace_shortcutkeys@1.0.0", path = { "shortcutkeys" } },
 		{ root = "Packages|_Index|y-workplace_shortcutkeys@1.0.0|shortcutkeys", path = { "wally" } },
-		{ root = "Shared", path = { "Core", "LoadingScreen", "LensFlare" } },
+		{ root = "Shared", path = { "Core", "LoadingScreen", "LensFlare", "Camera", "Movement", "Gameplay" } },
 		{ root = "Shared|Core", path = { "BootstrapClient", "BootstrapServer", "Components", "Constants", "ECS", "Lib", "Services", "Types" } },
 		{ root = "Shared|Core|ECS", path = { "Components", "Systems", "World" } },
 		{ root = "Shared|Core|ECS|Components", path = { "Connections", "Data", "Input", "Runtime", "UI" } },
@@ -108,6 +108,7 @@ return {
 		{ root = "Shared|Core|ECS|Components|Input", path = { "ClickState", "Tray" } },
 		{ root = "Shared|Core|ECS|Components|Runtime", path = { "BreakPer", "BreakRende", "Breaking", "Detector", "NowPer", "Object", "Path", "Per" } },
 		{ root = "Shared|Core|ECS|Components|UI", path = { "Depth", "Icon", "ItemReference", "Visibility" } },
+		{ root = "Shared|Core|Services", path = { "CoreClient" } },
 		{ root = "Shared|LoadingScreen", path = { "Modules" } },
 		{ root = "Shared|LoadingScreen|Modules", path = { "CreateLoadingTree", "Root", "SafeLoader" } },
 		{ root = "Shared|LensFlare", path = { "Assets", "Modules", "Services", "Constants" } },
@@ -118,6 +119,16 @@ return {
 		{ root = "Shared|LensFlare|Modules", path = { "LensFlare" } },
 		{ root = "Shared|LensFlare|Services", path = { "LensFlareClient" } },
 		{ root = "Shared|LensFlare|Constants", path = { "Configuration" } },
+		{ root = "Shared|Camera", path = { "Components", "Services", "Types" } },
+		{ root = "Shared|Camera|Components", path = { "ViewportOffset" } },
+		{ root = "Shared|Camera|Services", path = { "CameraClient" } },
+		{ root = "Shared|Camera|Types", path = { "Camera" } },
+		{ root = "Shared|Movement", path = { "Modules", "Services", "Types" } },
+		{ root = "Shared|Movement|Modules", path = { "Key" } },
+		{ root = "Shared|Movement|Services", path = { "MovementClient" } },
+		{ root = "Shared|Movement|Types", path = { "Movement" } },
+		{ root = "Shared|Gameplay", path = { "Services" } },
+		{ root = "Shared|Gameplay|Services", path = { "GameplayClient" } },
 		{ root = "UI", path = { "App", "Shared" } },
 		{ root = "UI|App", path = { "AppRoot", "Providers", "Startup" } },
 		{ root = "UI|Shared", path = { "Hooks", "Primitives", "UITypes" } },
@@ -126,10 +137,12 @@ return {
 		{ root = "DirectPackages", path = { "Timeline", "NotesAnimation" } }
 	},
 	Workspace = {
-		{ root = "", path = { "Terrain", "Camera", "Notes" } },
-		{ root = "Notes", path = { "Note", "MeshPart" } },
-		{ root = "Notes|Note", path = { "Script", "WeldConstraint", "ClickDetector" } },
-		{ root = "Notes|MeshPart", path = { "ClickDetector", "Mesh" } }
+		{ root = "", path = { "Terrain", "Camera", "Notes", "Movement", "World" } },
+		{ root = "Notes", path = { "MeshPart", "TriangularNote", "SphericalNote", "CubicNote" } },
+		{ root = "Notes|MeshPart", path = { "ClickDetector", "Mesh" } },
+		{ root = "Notes|TriangularNote", path = { "ClickDetector" } },
+		{ root = "Notes|SphericalNote", path = { "ClickDetector" } },
+		{ root = "Notes|CubicNote", path = { "ClickDetector" } }
 	},
 	StarterGui = {
 

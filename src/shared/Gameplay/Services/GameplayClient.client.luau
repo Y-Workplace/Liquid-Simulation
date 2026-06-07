@@ -1,13 +1,16 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Timeline = require(ReplicatedStorage.DirectPackages.Timeline).new(10)
+local Workspace = game:GetService("Workspace")
+local _Timeline = require(ReplicatedStorage.DirectPackages.Timeline).new(10)
+local NotesAnimation = require(ReplicatedStorage.DirectPackages.NotesAnimation)
 local EventTree = require(ReplicatedStorage.Packages.EventTree)
 
 local eventGameplay = EventTree.GameplayService
-local World = workspace.World
+local _World = workspace.World
+local Notes = Workspace.Notes
 
 local Gameplay = {}
 
-local function Compute(Props, Progress: number)
+local function _Compute(Props, Progress: number)
 
 end
 
@@ -20,8 +23,8 @@ local function BindInit()
 end
 
 function Gameplay:Init()
-
-
+  self.NotesAnimation = NotesAnimation.new({ Notes.CubicNote, Notes.MeshPart, Notes.SphericalNote, Notes.TriangularNote})
+  self.NotesAnimation:Init()
   self:BindEvent()
 end
 
@@ -32,7 +35,7 @@ function Gameplay:BindEvent()
 end
 
 function Gameplay:Start()
-
+  self.NotesAnimation:Start()
 end
 
 BindInit()

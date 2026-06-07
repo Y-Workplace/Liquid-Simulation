@@ -1,44 +1,66 @@
-task.wait(5)
-
 local AssetService = game:GetService("AssetService")
 local RunService = game:GetService("RunService")
 
--- 🔧 CONFIGURAÇÕES -----------------------------
 local WIDTH, HEIGHT = 64, 64
 local SIZE = Vector2.new(WIDTH, HEIGHT)
-local targetFPS = 15
-local animationSpeed = 0.3
-local reflectionSpeed = 0.5
-local reflectionInterval = 3.0
-local reflectionWidth = 0.05
-local reflectionColor = Color3.fromRGB(255, 255, 255)
-local reflectionIntensity = 0.8
-local bakedFrameCount = 180
-local noiseScale = 1 -- maior = mais detalhes
-local pigmentThreshold = 0.3
-local pigmentStrength = 0.8
-local bakedColorFrames = {}
-local bakedNoiseFrames = {}
-local cacheNotes = {}
-------------------------------------------------
+local TARGET_FPS = 15
+local BAKED_FRAME_COUNT = 180
+local NOISE_SCALE = 0.1
+local PIGMENT_THRESHOLD = 0.3
 
--- 🧨 DISSOLVE -----------------------------
-local dissolving = false
-local dissolveProgress = 0
-local dissolveSpeed = 0.5 -- ajusta timing da nota
+local COLOR_A = Color3.fromRGB(180, 70, 10)
+local COLOR_B = Color3.fromRGB(255, 160, 70)
 
-local edgeWidth = 0.05
-local edgeColor = Color3.fromRGB(255, 255, 0)
-local edgeIntensity = 1
-------------------------------------------
+local BYTES_PP = 4
+local TOTAL_BYTES = WIDTH * HEIGHT * BYTES_PP
+local FRAME_TIME = 1 / TARGET_FPS
+local TAU = math.pi * 2
+local ANIMATION_RADIUS = 1.5
 
-local function fbm(x, y, t)
+export type NoteAnimation = {
+	bakedColorFrames: { buffer },
+	cacheNotes: { MeshPart },
+	connection: RBXScriptConnection?,
+	editable: EditableImage?,
+	accumulator: number,
+	frameIndex: number,
+}
+
+local NoteAnimation = {}
+NoteAnimation.__index = NoteAnimation
+
+local function tileableNoise(
+	x: number,
+	y: number,
+	width: number,
+	height: number,
+	scale: number,
+	offsetX: number,
+	offsetY: number
+): number
+	-- Torus sampling keeps the baked image seamless when UVs repeat.
+	local u = x / width
+	local v = y / height
+	local angleU = u * TAU
+	local angleV = v * TAU
+	local nx = math.cos(angleU) * scale
+	local ny = math.sin(angleU) * scale
+	local nz = math.cos(angleV) * scale
+	local nw = math.sin(angleV) * scale
+
+	return math.noise(nx + offsetX, ny, nz + nw + offsetY)
+end
+
+local function fbm(x: number, y: number, t: number): number
 	local total = 0
 	local amplitude = 0.5
 	local frequency = 1
+	local offsetX = math.cos(t) * ANIMATION_RADIUS
+	local offsetY = math.sin(t) * ANIMATION_RADIUS
 
 	for _ = 1, 3 do
-		total += math.noise(x * frequency, y * frequency, t) * amplitude
+		total += tileableNoise(x, y, WIDTH, HEIGHT, NOISE_SCALE * frequency, offsetX, offsetY)
+			* amplitude
 		frequency *= 2
 		amplitude *= 0.5
 	end
@@ -46,222 +68,127 @@ local function fbm(x, y, t)
 	return total
 end
 
--- Cria EditableImage
-local editable = AssetService:CreateEditableImage({Size = SIZE})
-
-for _, Note in script.Parent.Notes:GetChildren() do
-	Note.TextureContent = Content.fromObject(editable)
-
-	local detector = Note:FindFirstChildOfClass("ClickDetector")
-	table.insert(cacheNotes, Note)
-	if detector then
-		detector.MouseClick:Connect(function()
-			Note.Transparency = 0.02
-			dissolving = true
-			dissolveProgress = 0
-		end)
-	end
-end
-
--- Utilidades de buffer
-local BYTES_PP = 4
-local totalBytes = WIDTH * HEIGHT * BYTES_PP
-local pixelBuffer = buffer.create(totalBytes)
-
-local function setPixel(buf, x, y, r, g, b, a)
+local function setPixel(buf: buffer, x: number, y: number, r: number, g: number, b: number, a: number)
 	local idx = (y * WIDTH + x) * BYTES_PP
-	buffer.writeu8(buf, idx + 0, r)
-	buffer.writeu8(buf, idx + 1, g)
-	buffer.writeu8(buf, idx + 2, b)
-	buffer.writeu8(buf, idx + 3, a)
+
+	buffer.writeu8(buf, idx + 0, math.clamp(math.floor(r), 0, 255))
+	buffer.writeu8(buf, idx + 1, math.clamp(math.floor(g), 0, 255))
+	buffer.writeu8(buf, idx + 2, math.clamp(math.floor(b), 0, 255))
+	buffer.writeu8(buf, idx + 3, math.clamp(math.floor(a), 0, 255))
 end
 
-local function applyDissolve(baseBuffer, noiseBuffer, threshold)
-	local softness = 0.05
+function NoteAnimation.new(notes: { MeshPart }?): NoteAnimation
+	local self: NoteAnimation = setmetatable({
+		bakedColorFrames = {},
+		cacheNotes = notes or {},
+		connection = nil,
+		editable = nil,
+		accumulator = 0,
+		frameIndex = 1,
+	}, NoteAnimation) :: any
 
-	for y = 0, HEIGHT - 1 do
-		for x = 0, WIDTH - 1 do
-			local idx = (y * WIDTH + x) * BYTES_PP
+	return self
+end
 
-			local baseR = buffer.readu8(baseBuffer, idx)
-			local baseG = buffer.readu8(baseBuffer, idx + 1)
-			local baseB = buffer.readu8(baseBuffer, idx + 2)
+function NoteAnimation:Init()
+	self.editable = AssetService:CreateEditableImage({ Size = SIZE })
+	self:_BakeFrames()
 
-			local noise = buffer.readu8(noiseBuffer, idx) / 255
-
-			-- 🎯 curva (ESSENCIAL)
-			-- noise = noise ^ 0.5
-
-			local alpha = 255
-			local glow = 0
-
-			if noise < threshold - softness then
-				alpha = 0
-
-			elseif noise < threshold then
-				local t = (noise - (threshold - softness)) / softness
-				alpha = t * 255
-
-				-- glow só nasce aqui (transição real)
-				glow = 1 - t
-
-			elseif noise < threshold + edgeWidth then
-				local t = (noise - threshold) / edgeWidth
-
-				-- glow fraco na borda externa
-				glow = (1 - t) * 0.5
-			end
-
-			if glow > 0 then
-				baseR = math.clamp(baseR + edgeColor.R * 255 * glow * edgeIntensity, 0, 255)
-				baseG = math.clamp(baseG + edgeColor.G * 255 * glow * edgeIntensity, 0, 255)
-				baseB = math.clamp(baseB + edgeColor.B * 255 * glow * edgeIntensity, 0, 255)
-			end
-
-			setPixel(pixelBuffer, x, y, baseR, baseG, baseB, alpha)
-		end
+	for _, note in ipairs(self.cacheNotes) do
+		self:_ApplyToNote(note)
 	end
 end
 
--- 🎨 Cores
-local colorA = Color3.fromRGB(180, 70, 10)
-local colorB = Color3.fromRGB(255, 160, 70)
-
--- 🧊 Gera textura tileable
-for frame = 1, bakedFrameCount do
-	local t = (frame / bakedFrameCount) * math.pi * 2
-	local frameBuffer = buffer.create(totalBytes)
-	local noiseBuffer = buffer.create(totalBytes)
-
-	for y = 0, HEIGHT - 1 do
-		for x = 0, WIDTH - 1 do
-			local u = x / (WIDTH - 1)
-			local v = y / (HEIGHT - 1)
-
-			-- gera noise contínuo no espaço 4D (x,y + tempo)
-			local n = fbm(u * noiseScale, v * noiseScale, math.sin(t))
-
-			n = math.clamp((n + 1) * 0.5, 0, 1)
-
-			local noiseByte = math.floor(n * 255)
-			setPixel(noiseBuffer, x, y, noiseByte, noiseByte, noiseByte, 255)
-
-			local mix = math.clamp((n - pigmentThreshold) / (1 - pigmentThreshold), 0, 1)
-
-			local r = colorA.R + (colorB.R - colorA.R) * mix
-			local g = colorA.G + (colorB.G - colorA.G) * mix
-			local b = colorA.B + (colorB.B - colorA.B) * mix
-
-			setPixel(frameBuffer, x, y, r * 255, g * 255, b * 255, 255)
-		end
-	end
-
-	table.insert(bakedColorFrames, frameBuffer)
-	table.insert(bakedNoiseFrames, noiseBuffer)
+function NoteAnimation:Insert(note: MeshPart)
+	table.insert(self.cacheNotes, note)
+	self:_ApplyToNote(note)
 end
 
--- ☀️ Reflexo suave -------------------------------
-local reflectionTimer = 0
-local reflectionActive = false
-local reflectionProgress = 0
-local nextReflectionTime = math.random() * reflectionInterval + 1
+function NoteAnimation:Start()
+	if not self.editable then
+		self:Init()
+	end
 
-local function applyReflection(bufferRef, progress)
-	local width = reflectionWidth
-	local center = progress * WIDTH
-	local rR, rG, rB = reflectionColor.R * 255, reflectionColor.G * 255, reflectionColor.B * 255
+	self:Stop()
 
-	-- 🕊️ Transição de entrada/saída (fade-in/out no início e fim do reflexo)
-	local appearFade = math.clamp(math.sin(math.pi * math.clamp(progress, 0, 1)), 0, 1)
-
-	for y = 0, HEIGHT - 1 do
-		for x = 0, WIDTH - 1 do
-			local distance = math.abs(x - center) / (WIDTH * width)
-			local idx = (y * WIDTH + x) * BYTES_PP
-
-			local baseR = buffer.readu8(bufferRef, idx)
-			local baseG = buffer.readu8(bufferRef, idx + 1)
-			local baseB = buffer.readu8(bufferRef, idx + 2)
-
-			if distance < 1 then
-				-- 💫 Fade lateral: transparente nas bordas do reflexo
-				local edgeFade = math.cos(distance * math.pi) * 0.5 + 0.5
-				local totalFade = edgeFade * appearFade
-
-				baseR = math.clamp(baseR + rR * reflectionIntensity * totalFade, 0, 255)
-				baseG = math.clamp(baseG + rG * reflectionIntensity * totalFade, 0, 255)
-				baseB = math.clamp(baseB + rB * reflectionIntensity * totalFade, 0, 255)
-			end
-
-			setPixel(pixelBuffer, x, y, baseR, baseG, baseB, 255)
+	self.connection = RunService.RenderStepped:Connect(function(dt)
+		local editable = self.editable
+		if not editable then
+			return
 		end
+
+		self.accumulator += dt
+
+		if self.accumulator < FRAME_TIME then
+			return
+		end
+
+		self.accumulator -= FRAME_TIME
+		self.frameIndex = (self.frameIndex % BAKED_FRAME_COUNT) + 1
+
+		local baseFrame = self.bakedColorFrames[self.frameIndex]
+		if baseFrame then
+			editable:WritePixelsBuffer(Vector2.new(0, 0), SIZE, baseFrame)
+		end
+	end)
+end
+
+function NoteAnimation:Stop()
+	if self.connection then
+		self.connection:Disconnect()
+		self.connection = nil
 	end
 end
 
--- 🎞️ Loop de render ------------------------------
-local time = 0
-local accumulator = 0
-local frameTime = 1 / targetFPS
-local frameIndex = 1
+function NoteAnimation:Destroy()
+	self:Stop()
 
-RunService.RenderStepped:Connect(function(dt)
-	accumulator += dt
-	time += dt * animationSpeed
-
-	if reflectionActive then
-		reflectionProgress += dt * reflectionSpeed
-		if reflectionProgress >= 1 then
-			reflectionActive = false
-			nextReflectionTime = time + (math.random() * reflectionInterval + 2)
-		end
-	elseif time >= nextReflectionTime then
-		reflectionActive = true
-		reflectionProgress = 0
+	if self.editable then
+		self.editable:Destroy()
+		self.editable = nil
 	end
 
-	if accumulator >= frameTime then
-		accumulator -= frameTime
-		frameIndex = (frameIndex % bakedFrameCount) + 1
-		local baseFrame = bakedColorFrames[frameIndex]
-		local noiseFrame = bakedNoiseFrames[frameIndex]
+	table.clear(self.bakedColorFrames)
+	table.clear(self.cacheNotes)
+end
 
-		-- 🧨 DISSOLVE MODE
-		if dissolving then
-			dissolveProgress += math.min(dt * dissolveSpeed, 0.02)
+function NoteAnimation:_BakeFrames()
+	table.clear(self.bakedColorFrames)
 
-			local t = dissolveProgress
+	for frame = 1, BAKED_FRAME_COUNT do
+		local t = ((frame - 1) / BAKED_FRAME_COUNT) * TAU
+		local frameBuffer = buffer.create(TOTAL_BYTES)
 
-			-- curva
-			local shaped = t * t * t
+		for y = 0, HEIGHT - 1 do
+			for x = 0, WIDTH - 1 do
+				local n = fbm(x, y, t)
 
-			-- quantização
-			local steps = 24
-			local quantized = math.floor(shaped * steps) / steps
+				n = math.clamp((n + 1) * 0.5, 0, 1)
 
-			-- jitter
-			local jitter = math.noise(time * 6) * 0.015
+				local mix = math.clamp((n - PIGMENT_THRESHOLD) / (1 - PIGMENT_THRESHOLD), 0, 1)
+				local r = COLOR_A.R + (COLOR_B.R - COLOR_A.R) * mix
+				local g = COLOR_A.G + (COLOR_B.G - COLOR_A.G) * mix
+				local b = COLOR_A.B + (COLOR_B.B - COLOR_A.B) * mix
 
-			local finalThreshold = quantized + jitter
-
-			applyDissolve(baseFrame, noiseFrame, finalThreshold)
-			editable:WritePixelsBuffer(Vector2.new(0, 0), SIZE, pixelBuffer)
-
-			if dissolveProgress >= 1 then
-				dissolving = false
-
-				for _, note in ipairs(cacheNotes) do
-					note.Transparency = 0
-				end
-			end
-
-			-- ✨ NORMAL MODE
-		else
-			if reflectionActive then
-				applyReflection(baseFrame, reflectionProgress)
-				editable:WritePixelsBuffer(Vector2.new(0, 0), SIZE, pixelBuffer)
-			else
-				editable:WritePixelsBuffer(Vector2.new(0, 0), SIZE, baseFrame)
+				setPixel(frameBuffer, x, y, r * 255, g * 255, b * 255, 255)
 			end
 		end
+
+		table.insert(self.bakedColorFrames, frameBuffer)
 	end
-end)
+end
+
+function NoteAnimation:_ApplyToNote(note: MeshPart)
+	local editable = self.editable
+	if not editable then
+		return
+	end
+
+	local surface = AssetService:CreateSurfaceAppearanceAsync({
+		ColorMap = Content.fromObject(editable),
+	})
+
+	surface.Parent = note
+end
+
+return NoteAnimation
