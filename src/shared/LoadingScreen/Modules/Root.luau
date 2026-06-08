@@ -134,15 +134,15 @@ return {
 		{ root = "UI|Shared", path = { "Hooks", "Primitives", "UITypes" } },
 		{ root = "Game", path = { "Assets", "Configs" } },
 		{ root = "Game|Assets", path = { "ImageIDs", "SoundIDs" } },
-		{ root = "DirectPackages", path = { "Timeline", "NotesAnimation" } }
+		{ root = "DirectPackages", path = { "Timeline", "NotesAnimation", "ForceFieldAnimation" } }
 	},
 	Workspace = {
 		{ root = "", path = { "Terrain", "Camera", "Notes", "Movement", "World" } },
 		{ root = "Notes", path = { "MeshPart", "TriangularNote", "SphericalNote", "CubicNote" } },
-		{ root = "Notes|MeshPart", path = { "ClickDetector", "Mesh" } },
-		{ root = "Notes|TriangularNote", path = { "ClickDetector" } },
-		{ root = "Notes|SphericalNote", path = { "ClickDetector" } },
-		{ root = "Notes|CubicNote", path = { "ClickDetector" } }
+		{ root = "Notes|MeshPart", path = { "ClickDetector", "Mesh", "ForceField" } },
+		{ root = "Notes|TriangularNote", path = { "ClickDetector", "ForceField" } },
+		{ root = "Notes|SphericalNote", path = { "ClickDetector", "ForceField" } },
+		{ root = "Notes|CubicNote", path = { "ClickDetector", "ForceField" } }
 	},
 	StarterGui = {
 

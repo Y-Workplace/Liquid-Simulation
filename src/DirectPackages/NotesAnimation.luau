@@ -59,8 +59,7 @@ local function fbm(x: number, y: number, t: number): number
 	local offsetY = math.sin(t) * ANIMATION_RADIUS
 
 	for _ = 1, 3 do
-		total += tileableNoise(x, y, WIDTH, HEIGHT, NOISE_SCALE * frequency, offsetX, offsetY)
-			* amplitude
+		total += tileableNoise(x, y, WIDTH, HEIGHT, NOISE_SCALE * frequency, offsetX, offsetY) * amplitude
 		frequency *= 2
 		amplitude *= 0.5
 	end
@@ -78,9 +77,10 @@ local function setPixel(buf: buffer, x: number, y: number, r: number, g: number,
 end
 
 function NoteAnimation.new(notes: { MeshPart }?): NoteAnimation
+	local cacheNotes = notes or {}
 	local self: NoteAnimation = setmetatable({
 		bakedColorFrames = {},
-		cacheNotes = notes or {},
+		cacheNotes = cacheNotes,
 		connection = nil,
 		editable = nil,
 		accumulator = 0,
@@ -93,6 +93,11 @@ end
 function NoteAnimation:Init()
 	self.editable = AssetService:CreateEditableImage({ Size = SIZE })
 	self:_BakeFrames()
+
+	local baseFrame = self.bakedColorFrames[self.frameIndex]
+	if baseFrame then
+		self.editable:WritePixelsBuffer(Vector2.new(0, 0), SIZE, baseFrame)
+	end
 
 	for _, note in ipairs(self.cacheNotes) do
 		self:_ApplyToNote(note)
