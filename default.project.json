@@ -54,6 +54,12 @@
           "$path": "src/startup/Client.client.luau"
         }
       }
+    },
+
+    "Workspace": {
+      "Tools": {
+        "$path": "tools"
+      }
     }
   }
 }

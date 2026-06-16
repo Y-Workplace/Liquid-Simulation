@@ -36,10 +36,10 @@ end
 -- Starts the core system
 function Core:Start()
   Logger:Info("[Core] Starting CameraService")
-	EventTree.CameraService.Start.Callable:Call()
+	--EventTree.CameraService.Start.Callable:Call()
 
   Logger:Info("[Core] Starting MovementService")
-	EventTree.MovementService.Start.Callable:Call()
+	--EventTree.MovementService.Start.Callable:Call()
 
   EventTree.LensFlare.Start.Callable:Call()
 

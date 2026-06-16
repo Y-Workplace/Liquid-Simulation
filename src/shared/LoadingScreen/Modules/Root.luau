@@ -134,15 +134,18 @@ return {
 		{ root = "UI|Shared", path = { "Hooks", "Primitives", "UITypes" } },
 		{ root = "Game", path = { "Assets", "Configs" } },
 		{ root = "Game|Assets", path = { "ImageIDs", "SoundIDs" } },
-		{ root = "DirectPackages", path = { "Timeline", "NotesAnimation", "ForceFieldAnimation" } }
+		{ root = "DirectPackages", path = { "AnimationProjection", "ForceFieldAnimation", "ForceFieldAnimation2", "MaterialAnimation", "NotesAnimation", "NotesAnimation2", "ShineAnimation", "Timeline", "TriangularForceFieldAnimation", "TriangularNotesAnimation" } },
+		{ root = "DirectPackages|MaterialAnimation", path = { "Graph", "MaterialAnimation", "NodeRegistry", "Nodes", "SurfaceAppearanceBinder", "Workspace", "Workspaces" } },
+		{ root = "DirectPackages|MaterialAnimation|Nodes", path = { "FBMNoise", "ForceFieldIntensity", "ForceFieldMaterial", "NoiseToPalette", "ShineBand", "ShineMaterial", "TriangularNotesLayers", "TriangularStripeForceField" } },
+		{ root = "DirectPackages|MaterialAnimation|Workspaces", path = { "ForceFieldAnimation", "NotesAnimation", "ShineAnimation", "TriangularForceFieldAnimation", "TriangularNotesAnimation" } }
 	},
 	Workspace = {
 		{ root = "", path = { "Terrain", "Camera", "Notes", "Movement", "World" } },
 		{ root = "Notes", path = { "MeshPart", "TriangularNote", "SphericalNote", "CubicNote" } },
-		{ root = "Notes|MeshPart", path = { "ClickDetector", "Mesh", "ForceField" } },
-		{ root = "Notes|TriangularNote", path = { "ClickDetector", "ForceField" } },
-		{ root = "Notes|SphericalNote", path = { "ClickDetector", "ForceField" } },
-		{ root = "Notes|CubicNote", path = { "ClickDetector", "ForceField" } }
+		{ root = "Notes|MeshPart", path = { "ClickDetector", "Mesh", "ForceField", "Surface" } },
+		{ root = "Notes|TriangularNote", path = { "ClickDetector", "ForceField", "Surface" } },
+		{ root = "Notes|SphericalNote", path = { "ClickDetector", "ForceField", "Surface" } },
+		{ root = "Notes|CubicNote", path = { "ClickDetector", "ForceField", "Surface" } }
 	},
 	StarterGui = {
 

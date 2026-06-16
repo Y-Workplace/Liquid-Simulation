@@ -38,8 +38,8 @@ Logger:Info("[Main] Boostrap Finnished")
 
 local InitializeServices = {
  "Core",
- "CameraService",
- "MovementService",
+ --"CameraService",
+ --"MovementService",
  "GameplayService",
 }
 
@@ -49,33 +49,27 @@ local function Init()
 
 	for _, serviceName in ipairs(InitializeServices) do
 		Logger:Info("Initializing:", serviceName)
-
 		local serviceNode = EventTree[serviceName]
-
 		if not serviceNode then
 			Logger:Warn("[Client] Missing service node: " .. serviceName)
 			continue
 		end
-
 		if not serviceNode.Init then
 			Logger:Warn("[Client] Missing Init node for service: " .. serviceName)
 			continue
 		end
-
 		if not serviceNode.Init.Callable then
 			Logger:Warn("[Client] Missing Init.Callable for service: " .. serviceName)
 			continue
 		end
-
 		local ok, err = xpcall(function()
 			serviceNode.Init.Callable:Call()
 		end, debug.traceback)
-
 		if ok then
 			Logger:Info(serviceName .. " Initialized")
 		else
+			warn(tostring(err))
 			Logger:Warn(serviceName .. " Initialization Failed\n" .. tostring(err))
-      warn(tostring(err))
 		end
 	end
 

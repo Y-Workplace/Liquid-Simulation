@@ -7,6 +7,7 @@ local boots = {
 	{ domain = "LensFlare", serviceName = "LensFlareClient" },
   { domain = "Movement", serviceName = "MovementClient" },
   { domain = "Camera", serviceName = "CameraClient" },
+    { domain = "Gameplay", serviceName = "PulseClient" },
   { domain = "Gameplay", serviceName = "GameplayClient" },
 }
 
