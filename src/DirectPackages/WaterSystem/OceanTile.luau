@@ -108,6 +108,7 @@ export type TileConfig = {
 export type OceanTile = {
 	SourcePart: BasePart,
 	MeshPart: MeshPart,
+	ReflectionMeshPart: MeshPart,
 	EditableMesh: EditableMesh,
 	BaseCFrame: CFrame,
 	Destroy: (self: OceanTile) -> (),
@@ -601,6 +602,45 @@ local function configureMeshPart(meshPart: MeshPart, sourcePart: BasePart, confi
 	meshPart.Reflectance = config.Reflectance
 end
 
+local function getReflectionSize(meshPart: MeshPart): Vector3
+	local size = meshPart.Size
+
+	return Vector3.new(
+		math.max(size.X - 0.1, 0.001),
+		math.max(size.Y - 1, 0.001),
+		math.max(size.Z - 0.1, 0.001)
+	)
+end
+
+local function getReflectionCFrame(meshPart: MeshPart): CFrame
+	local position = meshPart.Position
+
+	return CFrame.new(position.X, position.Y - 0.5, position.Z)
+end
+
+local function configureReflectionMeshPart(meshPart: MeshPart, sourcePart: BasePart, renderMeshPart: MeshPart)
+	meshPart.Name = "OceanTileReflection_" .. sourcePart.Name
+	meshPart.Anchored = true
+	meshPart.CanCollide = false
+	meshPart.CanTouch = false
+	meshPart.CanQuery = false
+	meshPart.CastShadow = false
+	meshPart.Material = Enum.Material.Glass
+	meshPart.Transparency = 3
+	meshPart.Reflectance = 0
+	meshPart.Size = getReflectionSize(renderMeshPart)
+
+	local highlight = Instance.new("Highlight")
+	highlight.Name = "Highlight"
+	highlight.Enabled = false
+	highlight.Parent = meshPart
+end
+
+local function syncReflectionMeshPart(tile: InternalOceanTile)
+	tile.ReflectionMeshPart.Size = getReflectionSize(tile.MeshPart)
+	tile.ReflectionMeshPart.CFrame = getReflectionCFrame(tile.MeshPart)
+end
+
 local function configureSeaSpray(tile: InternalOceanTile)
 	local meshPart = tile.MeshPart
 	local textureId = normalizeAssetId(tile._Config.SeaSprayTextureId)
@@ -1012,10 +1052,6 @@ local function ensureSurfaceAppearance(tile: InternalOceanTile): boolean
 
 		local surface = surfaceOrError :: SurfaceAppearance
 
-		pcall(function()
-			surface.AlphaMode = Enum.AlphaMode.Transparency
-		end)
-
 		surface.Name = "WaterSurfacePipeline"
 		surface.Parent = tile.MeshPart
 		tile._SurfaceAppearance = surface
@@ -1071,9 +1107,6 @@ local function ensureSurfaceAppearance(tile: InternalOceanTile): boolean
 	end
 
 	local surface = surfaceOrError :: SurfaceAppearance
-	pcall(function()
-		surface.AlphaMode = Enum.AlphaMode.Transparency
-	end)
 
 	surface.Name = "WaterSurfaceColor"
 	surface.Parent = tile.MeshPart
@@ -2433,6 +2466,7 @@ function OceanTileClass:Update(time: number, camera: Camera?, renderVisible: boo
 
 	self.BaseCFrame = getBaseCFrame(self.SourcePart)
 	self.MeshPart.CFrame = self.BaseCFrame
+	syncReflectionMeshPart(self)
 
 	local deltaTime = if self._LastUpdateTime >= 0 then math.clamp(time - self._LastUpdateTime, 0, 0.25) else 1 / 30
 	self._LastUpdateTime = time
@@ -2689,6 +2723,7 @@ function OceanTileClass:SetConfig(config: TileConfig)
 
 	self.MeshPart.Transparency = config.Transparency
 	self.MeshPart.Reflectance = config.Reflectance
+	syncReflectionMeshPart(self)
 
 	if config.InteractiveWavesEnabled and self._WaterBuffer == nil then
 		self._WaterBuffer = createWaterBuffer(self.SourcePart, config)
@@ -2891,6 +2926,10 @@ function OceanTileClass:Destroy()
 		self.MeshPart:Destroy()
 	end
 
+	if self.ReflectionMeshPart then
+		self.ReflectionMeshPart:Destroy()
+	end
+
 	if self.EditableMesh then
 		pcall(function()
 			self.EditableMesh:Destroy()
@@ -2917,6 +2956,7 @@ function OceanTile.new(
 	local tile = setmetatable({
 		SourcePart = sourcePart,
 		MeshPart = nil,
+		ReflectionMeshPart = nil,
 		EditableMesh = editableMesh,
 		BaseCFrame = getBaseCFrame(sourcePart),
 		_Config = config,
@@ -2998,9 +3038,18 @@ function OceanTile.new(
 		return nil, meshPartError
 	end
 
+	local reflectionMeshPart, reflectionMeshPartError = createMeshPart(editableMesh)
+
+	if reflectionMeshPart == nil then
+		meshPart:Destroy()
+		tile:Destroy()
+		return nil, reflectionMeshPartError
+	end
+
 	if parent.Parent == nil then
 		tile:Destroy()
 		meshPart:Destroy()
+		reflectionMeshPart:Destroy()
 		return nil, "Ocean tile parent was destroyed"
 	end
 
@@ -3008,6 +3057,11 @@ function OceanTile.new(
 	meshPart.CFrame = tile.BaseCFrame
 	meshPart.Parent = parent
 	tile.MeshPart = meshPart
+
+	configureReflectionMeshPart(reflectionMeshPart, sourcePart, meshPart)
+	reflectionMeshPart.CFrame = getReflectionCFrame(meshPart)
+	reflectionMeshPart.Parent = parent
+	tile.ReflectionMeshPart = reflectionMeshPart
 
 	local hasSurfaceAppearance = ensureSurfaceAppearance(tile)
 	local hasVertexColors = usesPaintVertices(config) and tile._SurfaceColorSupported
