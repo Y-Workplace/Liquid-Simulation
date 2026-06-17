@@ -3,7 +3,6 @@
 local AssetService = game:GetService("AssetService")
 
 local WaterDepthMap = require(script.Parent.WaterDepthMap)
-local WaterFoamBuffer = require(script.Parent.WaterFoamBuffer)
 local WaterObstacleMap = require(script.Parent.WaterObstacleMap)
 local WaterBuffer = require(script.Parent.WaterBuffer)
 local WaveSpectrum = require(script.Parent.WaveSpectrum)
@@ -129,17 +128,8 @@ type VertexState = {
 	baseLocal: Vector3,
 	gridX: number,
 	gridZ: number,
-	uvId: number?,
-	colorId: number?,
 	waveInfluence: number,
-	foamEnabled: boolean,
-	colorFoam: number,
-	colorHeight: number,
-	appliedColorFoam: number,
-	appliedColorHeight: number,
-	foam: number,
-	foamAccumulation: number,
-	waterHeight: number,
+	surfaceEnabled: boolean,
 }
 
 type EdgeVertexMapper = (number) -> number
@@ -161,22 +151,9 @@ type InternalOceanTile = OceanTile & {
 	_GridZCoordinates: buffer,
 	_Vertices: { VertexState },
 	_Faces: { FaceState },
-	_VertexColorsEnabled: boolean,
 	_WaterBuffer: WaterBuffer.WaterBuffer?,
 	_DepthMap: WaterDepthMap.WaterDepthMap?,
 	_ObstacleMap: WaterObstacleMap.WaterObstacleMap?,
-	_FoamBuffer: WaterFoamBuffer.WaterFoamBuffer?,
-	_FoamTexture: SurfaceAppearance?,
-	_FoamEditableImage: EditableImage?,
-	_FoamTextureKey: string?,
-	_FoamImageBuffer: buffer?,
-	_FoamTextureRowCursor: number,
-	_FoamTextureBake: { buffer }?,
-	_FoamTextureBakeKey: string,
-	_FoamTextureBakeFrames: number,
-	_FoamTextureBakeSize: number,
-	_LastFoamTextureUpdate: number,
-	_UvEnabled: boolean,
 	_SeaSprayAttachment: Attachment?,
 	_SeaSprayEmitter: ParticleEmitter?,
 	_SplashAttachment: Attachment?,
@@ -187,8 +164,6 @@ type InternalOceanTile = OceanTile & {
 	_MeshInvalid: boolean,
 	_IsFlat: boolean,
 	_LastUpdateTime: number,
-	_LastFoamColorUpdate: number,
-	_FoamVisible: boolean,
 	_InteractionWakeFrames: number,
 	_RingLodIndices: buffer?,
 	_RingLodCount: number,
@@ -196,14 +171,8 @@ type InternalOceanTile = OceanTile & {
 	_RingLodCenterZ: number,
 	_RingLodKey: string,
 	_RingLodDirty: boolean,
-	_RingFoamFaceIndices: buffer?,
-	_RingFoamFaceCount: number,
-	_PreviousRingFoamFaceIndices: buffer?,
-	_PreviousRingFoamFaceCount: number,
-	_RingFoamFullRefresh: boolean,
 	_WaveLoopPositions: buffer?,
 	_WaveLoopHeights: buffer?,
-	_WaveLoopSurface: buffer?,
 	_WaveLoopFrames: number,
 	_WaveLoopFrameStride: number,
 	_WaveLoopDuration: number,
@@ -212,31 +181,23 @@ type InternalOceanTile = OceanTile & {
 	_ObstacleImpactVertices: buffer?,
 	_ObstacleImpactVertexCount: number,
 	_LastObstacleSplashTime: number,
-	_LastFoamMaxRecalculateTime: number,
 }
 
 local OceanTileClass = {}
 OceanTileClass.__index = OceanTileClass
 
 local DEFAULT_MATERIAL = Enum.Material.SmoothPlastic
-local VERTEX_COLOR_TINT = Color3.new(1, 1, 1)
-local FOAM_BAKE_VERSION = 18
+local WAVE_BAKE_VERSION = 21
 local WAVE_LOOP_POSITION_STRIDE = 3
 local WAVE_LOOP_POSITION_BYTES = WAVE_LOOP_POSITION_STRIDE * 4
 local WAVE_LOOP_HEIGHT_BYTES = 4
-local WAVE_LOOP_SURFACE_BYTES = 4
-local WAVE_LOOP_SURFACE_FOAM = 0
-local WAVE_LOOP_SURFACE_HEIGHT = 1
-local WAVE_LOOP_SURFACE_ALPHA = 2
 local WAVE_LOOP_SEAM_FRACTION = 0.18
 local BAKE_YIELD_CELL_BUDGET = 4096
-local FOAM_MAX_RECALCULATE_INTERVAL = 0.22
 local MAX_OBSTACLE_IMPACT_VERTICES = 32
 local OBSTACLE_IMPACT_VERTEX_BYTES = 2
 local RING_LOD_ENTRY_BYTES = 4
 local RING_LOD_VERTEX_OFFSET = 0
 local RING_LOD_LEVEL_OFFSET = 2
-local RING_FACE_ENTRY_BYTES = 2
 local RING_LEVEL_NEAR = 0
 local RING_LEVEL_MID = 1
 local RING_LEVEL_FAR = 2
@@ -250,72 +211,12 @@ local VERTEX_STATIC_WAVE_SCALE = 2
 local VERTEX_STATIC_OCEAN_WEIGHT = 3
 local VERTEX_STATIC_LAKE_WEIGHT = 4
 local VERTEX_STATIC_SHALLOW_WEIGHT = 5
-local DEFAULT_WATER_COLOR_BACK = Color3.fromRGB(11, 42, 80)
-local DEFAULT_WATER_COLOR_TOP = Color3.fromRGB(31, 143, 128)
-local CREST_FOAM_MASK_START = 0.78
-local CREST_FOAM_MASK_FULL = 0.98
 
 local ensureWaveLoop: (InternalOceanTile) -> ()
-local sampleWaveLoopSurfaceField: (InternalOceanTile, number, number, number) -> (number, number)
 
 local function smoothstep(edge0: number, edge1: number, x: number): number
 	local t = math.clamp((x - edge0) / math.max(edge1 - edge0, 1e-6), 0, 1)
 	return t * t * (3 - 2 * t)
-end
-
-local function isFinalBakedSurfaceTexture(config: TileConfig): boolean
-	return not config.FoamTextureFromVerticesEnabled and not config.RuntimeSurfaceColorEnabled
-end
-
-local function usesSurfaceBufferForVisuals(config: TileConfig): boolean
-	return config.RuntimeSurfaceColorEnabled or config.FoamTextureFromVerticesEnabled
-end
-
-local function usesGeneratedSurfaceTexture(config: TileConfig): boolean
-	return not config.FoamTextureFromVerticesEnabled
-end
-
-local function applyGradientGain(value: number, gainValue: number): number
-	local t = math.clamp(value, 0, 1)
-	local gain = math.clamp(gainValue, 0, 1)
-	local exp = if gain >= 0.5 then 1 / math.max((1 - gain) * 2, 1e-4) else math.max(gain * 2, 1e-4)
-
-	return t ^ exp
-end
-
-local function getWaterGradientColor(config: TileConfig, waveSize: number): Color3
-	local tGained = applyGradientGain(waveSize, config.WaterColorGain or 0.5)
-	local colorBack = config.WaterColorBack or DEFAULT_WATER_COLOR_BACK
-	local colorTop = config.WaterColorTop or DEFAULT_WATER_COLOR_TOP
-	return colorBack:Lerp(colorTop, tGained)
-end
-
-local function getCrestFoamGradientAlpha(config: TileConfig, crestAmount: number): number
-	local tGained = applyGradientGain(crestAmount, config.CrestFoamAlphaGain or 0.9)
-	local alphaBack = math.clamp(config.CrestFoamAlphaBack or 0, 0, 1)
-	local alphaTop = math.clamp(config.CrestFoamAlphaTop or 1, 0, 1)
-
-	return alphaBack + (alphaTop - alphaBack) * tGained
-end
-
-local function blendSurfaceColor(config: TileConfig, foam: number, waterHeight: number): (Color3, number)
-	local foamAlpha = math.clamp(foam, 0, 1)
-	local heightAlpha = math.clamp(waterHeight, 0, 1)
-	local waterAlpha = math.clamp(config.WaterVertexAlpha, 0, 1)
-	local fullFoamVertexAlpha = math.clamp(config.FoamVertexAlpha, 0, 1)
-	local waterColor = getWaterGradientColor(config, heightAlpha)
-	local color = waterColor:Lerp(config.FoamColor, foamAlpha)
-	local alpha = waterAlpha + (fullFoamVertexAlpha - waterAlpha) * foamAlpha
-
-	return color, math.clamp(alpha, 0, 1)
-end
-
-local function getCrestWaveSize(sampleHeight: number, waveScale: number): number
-	return math.clamp(math.max(sampleHeight * waveScale, 0), 0, 1)
-end
-
-local function getCrestFoamMask(waveSize: number): number
-	return smoothstep(CREST_FOAM_MASK_START, CREST_FOAM_MASK_FULL, waveSize)
 end
 
 local function cframeWithUp(position: Vector3, upVector: Vector3): CFrame
@@ -331,44 +232,6 @@ local function cframeWithUp(position: Vector3, upVector: Vector3): CFrame
 	local back = right:Cross(up).Unit
 
 	return CFrame.fromMatrix(position, right, up, back)
-end
-
-local function sampleCrestFoamSignals(
-	config: TileConfig,
-	sampleHeight: number,
-	waveScale: number
-): (number, number)
-	local waveSize = getCrestWaveSize(sampleHeight, waveScale)
-	local crestMask = getCrestFoamMask(waveSize)
-	local foamAlpha = crestMask * getCrestFoamGradientAlpha(config, crestMask)
-
-	return math.clamp(foamAlpha, 0, 1), waveSize
-end
-
-local function sampleCrestFoamShape(
-	config: TileConfig,
-	sampleHeight: number,
-	waveScale: number
-): (number, number)
-	local foamAlpha, waveSize = sampleCrestFoamSignals(config, sampleHeight, waveScale)
-
-	return foamAlpha, waveSize
-end
-
-local function sampleInteractiveFoam(config: TileConfig, waterBuffer: WaterBuffer.WaterBuffer, localX: number, localZ: number): number
-	local slope, velocity = waterBuffer:SampleSurfaceActivity(localX, localZ)
-	local slopeFoam = math.clamp(
-		(slope - config.InteractiveFoamSlopeThreshold) / math.max(config.InteractiveFoamSlopeThreshold, 0.001),
-		0,
-		1
-	)
-	local velocityFoam = math.clamp(
-		(velocity - config.InteractiveFoamVelocityThreshold) / math.max(config.InteractiveFoamVelocityThreshold * 2, 0.001),
-		0,
-		1
-	)
-
-	return math.clamp(math.max(slopeFoam, velocityFoam) * config.InteractiveFoamStrength, 0, 1)
 end
 
 local function normalizeAssetId(assetId: string?): string?
@@ -559,37 +422,6 @@ local function createObstacleMap(sourcePart: BasePart, generatedParent: Instance
 	})
 end
 
-local function createFoamBuffer(sourcePart: BasePart, config: TileConfig): WaterFoamBuffer.WaterFoamBuffer?
-	if not config.FoamBufferEnabled or not usesSurfaceBufferForVisuals(config) then
-		return nil
-	end
-
-	return WaterFoamBuffer.new({
-		Resolution = config.FoamBufferResolution,
-		SizeX = math.max(sourcePart.Size.X, 1),
-		SizeZ = math.max(sourcePart.Size.Z, 1),
-		Decay = config.FoamBufferDecay,
-		Growth = config.FoamBufferGrowth,
-		SlopeThreshold = config.InteractiveFoamSlopeThreshold,
-		VelocityThreshold = config.InteractiveFoamVelocityThreshold,
-		InteractiveStrength = config.InteractiveFoamStrength,
-		ShallowStrength = config.ShoreFoamStrength,
-		ObstacleStrength = config.ObstacleFoamStrength,
-		MaxFoam = 1,
-	})
-end
-
-local function configureFoamBuffer(bufferState: WaterFoamBuffer.WaterFoamBuffer, config: TileConfig)
-	bufferState.Decay = config.FoamBufferDecay
-	bufferState.Growth = config.FoamBufferGrowth
-	bufferState.SlopeThreshold = config.InteractiveFoamSlopeThreshold
-	bufferState.VelocityThreshold = config.InteractiveFoamVelocityThreshold
-	bufferState.InteractiveStrength = config.InteractiveFoamStrength
-	bufferState.ShallowStrength = config.ShoreFoamStrength
-	bufferState.ObstacleStrength = config.ObstacleFoamStrength
-	bufferState.MaxFoam = 1
-end
-
 local function createEditableMesh(): (EditableMesh?, string?)
 	local ok, editableMesh = pcall(function()
 		return AssetService:CreateEditableMesh({ FixedSize = false })
@@ -690,28 +522,6 @@ local function wavePositionOffset(frameIndex: number, vertexIndex: number, verte
 	return (frameIndex * vertexCount + (vertexIndex - 1)) * WAVE_LOOP_POSITION_BYTES + component * 4
 end
 
-local function waveSurfaceOffset(frameIndex: number, vertexIndex: number, vertexCount: number): number
-	return (frameIndex * vertexCount + (vertexIndex - 1)) * WAVE_LOOP_SURFACE_BYTES
-end
-
-local function writeWaveLoopSurface(
-	config: TileConfig,
-	surface: buffer,
-	frameIndex: number,
-	vertexIndex: number,
-	vertexCount: number,
-	foam: number,
-	waterHeight: number
-)
-	local _, alpha = blendSurfaceColor(config, foam, waterHeight)
-	local offset = waveSurfaceOffset(frameIndex, vertexIndex, vertexCount)
-
-	buffer.writeu8(surface, offset + WAVE_LOOP_SURFACE_FOAM, math.clamp(math.floor(foam * 255 + 0.5), 0, 255))
-	buffer.writeu8(surface, offset + WAVE_LOOP_SURFACE_HEIGHT, math.clamp(math.floor(waterHeight * 255 + 0.5), 0, 255))
-	buffer.writeu8(surface, offset + WAVE_LOOP_SURFACE_ALPHA, math.clamp(math.floor(alpha * 255 + 0.5), 0, 255))
-	buffer.writeu8(surface, offset + 3, 0)
-end
-
 local function waveHeightOffset(frameIndex: number, vertexIndex: number, vertexCount: number): number
 	return (frameIndex * vertexCount + (vertexIndex - 1)) * WAVE_LOOP_HEIGHT_BYTES
 end
@@ -724,7 +534,7 @@ local function vertexBakeStaticOffset(vertexIndex: number, component: number): n
 	return ((vertexIndex - 1) * VERTEX_BAKE_STATIC_STRIDE + component) * 4
 end
 
-local function configureMeshPart(meshPart: MeshPart, sourcePart: BasePart, config: TileConfig, useVertexColors: boolean)
+local function configureMeshPart(meshPart: MeshPart, sourcePart: BasePart, config: TileConfig)
 	meshPart.Name = "OceanTile_" .. sourcePart.Name
 	meshPart.Anchored = true
 	meshPart.CanCollide = false
@@ -732,118 +542,9 @@ local function configureMeshPart(meshPart: MeshPart, sourcePart: BasePart, confi
 	meshPart.CanQuery = false
 	meshPart.CastShadow = false
 	meshPart.Material = DEFAULT_MATERIAL
-	meshPart.Color = if useVertexColors then VERTEX_COLOR_TINT else (config.WaterColorBack or DEFAULT_WATER_COLOR_BACK)
+	meshPart.Color = config.WaterColorBack
 	meshPart.Transparency = config.Transparency
 	meshPart.Reflectance = config.Reflectance
-end
-
-local function createBlankFoamImage(config: TileConfig): (EditableImage?, buffer?)
-	local size = math.clamp(math.round(config.FoamTextureResolution), 16, 1024)
-	local ok, editableImage = pcall(function()
-		return AssetService:CreateEditableImage({ Size = Vector2.new(size, size) })
-	end)
-
-	if not ok or editableImage == nil then
-		return nil, nil
-	end
-
-	local bytes = buffer.create(size * size * 4)
-
-	for index = 0, size * size - 1 do
-		local offset = index * 4
-		buffer.writeu8(bytes, offset, 255)
-		buffer.writeu8(bytes, offset + 1, 255)
-		buffer.writeu8(bytes, offset + 2, 255)
-		buffer.writeu8(bytes, offset + 3, 0)
-	end
-
-	editableImage:WritePixelsBuffer(Vector2.zero, Vector2.new(size, size), bytes)
-	return editableImage, bytes
-end
-
-local function configureFoamTexture(tile: InternalOceanTile)
-	local meshPart = tile.MeshPart
-	local textureId = normalizeAssetId(tile._Config.FoamTextureId)
-	local generatedSurfaceTexture = usesGeneratedSurfaceTexture(tile._Config)
-	local textureKey = if generatedSurfaceTexture
-		then `surface-buffer:{tile._Config.FoamTextureResolution}:{tile._Config.RuntimeSurfaceColorEnabled}`
-		elseif textureId == nil
-		then "none"
-		else `asset:{textureId}`
-
-	local surface = tile._FoamTexture
-
-	local function createSurfaceAppearance(content: Content)
-		if surface then
-			surface:Destroy()
-		end
-
-		surface = AssetService:CreateSurfaceAppearanceAsync({
-			ColorMap = content,
-		})
-		surface.Name = "FoamSurface"
-		surface.Parent = meshPart
-		tile._FoamTexture = surface
-	end
-
-	if textureKey ~= tile._FoamTextureKey and generatedSurfaceTexture then
-		if tile._FoamEditableImage then
-			tile._FoamEditableImage:Destroy()
-			tile._FoamEditableImage = nil
-		end
-
-		local editableImage, bytes = createBlankFoamImage(tile._Config)
-
-		if editableImage ~= nil then
-			tile._FoamEditableImage = editableImage
-			tile._FoamImageBuffer = bytes
-			tile._FoamTextureRowCursor = 0
-			tile._FoamTextureBake = nil
-			tile._FoamTextureBakeKey = ""
-			createSurfaceAppearance(Content.fromObject(editableImage))
-		end
-	elseif textureKey ~= tile._FoamTextureKey and textureId == nil then
-		if tile._FoamEditableImage then
-			tile._FoamEditableImage:Destroy()
-			tile._FoamEditableImage = nil
-		end
-
-		tile._FoamImageBuffer = nil
-		tile._FoamTextureRowCursor = 0
-		tile._FoamTextureBake = nil
-		tile._FoamTextureBakeKey = ""
-
-		if surface ~= nil then
-			surface:Destroy()
-			surface = nil
-			tile._FoamTexture = nil
-		end
-	elseif textureKey ~= tile._FoamTextureKey and textureId ~= nil then
-		if tile._FoamEditableImage then
-			tile._FoamEditableImage:Destroy()
-			tile._FoamEditableImage = nil
-		end
-		tile._FoamImageBuffer = nil
-		tile._FoamTextureRowCursor = 0
-		tile._FoamTextureBake = nil
-		tile._FoamTextureBakeKey = ""
-
-		local assetId = tonumber(string.match(textureId, "^rbxassetid://(%d+)$") or textureId)
-
-		if assetId ~= nil then
-			createSurfaceAppearance(Content.fromAssetId(assetId))
-		elseif surface ~= nil then
-			surface:Destroy()
-			surface = nil
-			tile._FoamTexture = nil
-		end
-	end
-
-	tile._FoamTextureKey = textureKey
-
-	if surface ~= nil then
-		surface.Color = if generatedSurfaceTexture then VERTEX_COLOR_TINT else tile._Config.FoamColor
-	end
 end
 
 local function configureSeaSpray(tile: InternalOceanTile)
@@ -875,6 +576,7 @@ local function configureSeaSpray(tile: InternalOceanTile)
 		emitter.Name = "SeaSpray"
 		emitter.EmissionDirection = Enum.NormalId.Top
 		emitter.Lifetime = NumberRange.new(0.45, 1.1)
+		emitter.Rate = 0
 		emitter.Speed = NumberRange.new(3, 10)
 		emitter.SpreadAngle = Vector2.new(22, 22)
 		emitter.Rotation = NumberRange.new(0, 360)
@@ -896,6 +598,7 @@ local function configureSeaSpray(tile: InternalOceanTile)
 	end
 
 	emitter.Texture = textureId
+	emitter.Rate = 0
 	emitter.Color = ColorSequence.new(tile._Config.FoamColor)
 	emitter.Enabled = true
 end
@@ -968,137 +671,13 @@ local function configureSplashParticles(tile: InternalOceanTile)
 	emitter.Enabled = true
 end
 
-local function createVertexColorId(tile: InternalOceanTile): number?
-	if not tile._VertexColorsEnabled then
-		return nil
-	end
-
-	local color, vertexAlpha = blendSurfaceColor(tile._Config, 0, 0)
-	local ok, colorId = pcall(function()
-		return tile.EditableMesh:AddColor(color, vertexAlpha)
-	end)
-
-	if not ok or colorId == nil then
-		tile._VertexColorsEnabled = false
-		return nil
-	end
-
-	return colorId
-end
-
-local function applyVertexSurfaceColor(tile: InternalOceanTile, vertex: VertexState): boolean
-	if not tile._VertexColorsEnabled then
-		return false
-	end
-
-	local colorId = vertex.colorId
-
-	if colorId == nil then
-		return false
-	end
-
-	if vertex.colorFoam == vertex.appliedColorFoam and vertex.colorHeight == vertex.appliedColorHeight then
-		return true
-	end
-
-	local color, vertexAlpha = blendSurfaceColor(tile._Config, vertex.colorFoam, vertex.colorHeight)
-	local ok = pcall(function()
-		tile.EditableMesh:SetColor(colorId, color)
-		tile.EditableMesh:SetColorAlpha(colorId, vertexAlpha)
-	end)
-
-	if not ok then
-		tile._VertexColorsEnabled = false
-		return false
-	end
-
-	vertex.appliedColorFoam = vertex.colorFoam
-	vertex.appliedColorHeight = vertex.colorHeight
-	return true
-end
-
-local function setFaceVertexColors(tile: InternalOceanTile, face: FaceState): boolean
-	if not tile._VertexColorsEnabled then
-		return false
-	end
-
-	local vertexA = tile._Vertices[face.a]
-	local vertexB = tile._Vertices[face.b]
-	local vertexC = tile._Vertices[face.c]
-
-	if vertexA == nil or vertexB == nil or vertexC == nil then
-		return false
-	end
-
-	local colorIdA = vertexA.colorId
-	local colorIdB = vertexB.colorId
-	local colorIdC = vertexC.colorId
-
-	if colorIdA == nil or colorIdB == nil or colorIdC == nil then
-		return false
-	end
-
-	local ok = pcall(function()
-		tile.EditableMesh:SetFaceColors(face.id, { colorIdA, colorIdB, colorIdC })
-	end)
-
-	if not ok then
-		tile._VertexColorsEnabled = false
-		return false
-	end
-
-	return true
-end
-
-local function createSurfaceUv(tile: InternalOceanTile, baseLocal: Vector3, foamEnabled: boolean): number?
-	if not foamEnabled or not tile._UvEnabled then
-		return nil
-	end
-
-	local halfSize = tile.SourcePart.Size * 0.5
-	local u = math.clamp((baseLocal.X + halfSize.X) / math.max(tile.SourcePart.Size.X, 0.001), 0, 1)
-	local v = math.clamp((baseLocal.Z + halfSize.Z) / math.max(tile.SourcePart.Size.Z, 0.001), 0, 1)
-	local ok, uvId = pcall(function()
-		return tile.EditableMesh:AddUV(Vector2.new(u, v))
-	end)
-
-	if not ok or uvId == nil then
-		tile._UvEnabled = false
-		return nil
-	end
-
-	return uvId
-end
-
-local function setSurfaceFaceUvs(tile: InternalOceanTile, face: FaceState)
-	if not tile._UvEnabled then
-		return
-	end
-
-	local a = tile._Vertices[face.a]
-	local b = tile._Vertices[face.b]
-	local c = tile._Vertices[face.c]
-
-	if a == nil or b == nil or c == nil or a.uvId == nil or b.uvId == nil or c.uvId == nil then
-		return
-	end
-
-	local ok = pcall(function()
-		tile.EditableMesh:SetFaceUVs(face.id, { a.uvId, b.uvId, c.uvId })
-	end)
-
-	if not ok then
-		tile._UvEnabled = false
-	end
-end
-
 local function addMeshVertex(
 	tile: InternalOceanTile,
 	baseLocal: Vector3,
 	gridX: number,
 	gridZ: number,
 	waveInfluence: number,
-	foamEnabled: boolean
+	surfaceEnabled: boolean
 ): number
 	local editableMesh = tile.EditableMesh
 	local vertices = tile._Vertices
@@ -1109,17 +688,8 @@ local function addMeshVertex(
 		baseLocal = baseLocal,
 		gridX = gridX,
 		gridZ = gridZ,
-		uvId = createSurfaceUv(tile, baseLocal, foamEnabled),
-		colorId = createVertexColorId(tile),
 		waveInfluence = math.clamp(waveInfluence, 0, 1),
-		foamEnabled = foamEnabled,
-		colorFoam = 0,
-		colorHeight = 0,
-		appliedColorFoam = 0,
-		appliedColorHeight = 0,
-		foam = 0,
-		foamAccumulation = 0,
-		waterHeight = 0,
+		surfaceEnabled = surfaceEnabled,
 	})
 
 	return #vertices
@@ -1136,8 +706,6 @@ local function addMeshFace(tile: InternalOceanTile, a: number, b: number, c: num
 	}
 
 	table.insert(tile._Faces, face)
-	setFaceVertexColors(tile, face)
-	setSurfaceFaceUvs(tile, face)
 end
 
 local function markMeshInvalid(tile: InternalOceanTile, err: any)
@@ -1391,12 +959,8 @@ local function ringLodEntryOffset(entryIndex: number): number
 	return entryIndex * RING_LOD_ENTRY_BYTES
 end
 
-local function ringFaceEntryOffset(entryIndex: number): number
-	return entryIndex * RING_FACE_ENTRY_BYTES
-end
-
 local function getRingLodKey(config: TileConfig): string
-	return `{config.Lod0Radius}:{config.Lod1Radius}:{config.Lod2Radius}:{config.LodRecenterDistance}:{config.VertexSpacing}:{config.MidLodVertexStep}:{config.FarLodVertexStep}:{config.ExtremeLodVertexStep}:{config.FarWaveDetail}:{config.FoamDistance}`
+	return `{config.Lod0Radius}:{config.Lod1Radius}:{config.Lod2Radius}:{config.LodRecenterDistance}:{config.VertexSpacing}:{config.MidLodVertexStep}:{config.FarLodVertexStep}:{config.ExtremeLodVertexStep}:{config.FarWaveDetail}`
 end
 
 local function quantizeRingCenter(value: number, recenterDistance: number): number
@@ -1481,66 +1045,6 @@ local function getRingDistanceFactor(tileDistanceFactor: number, lodLevel: numbe
 	return tileDistanceFactor * 0.48
 end
 
-local function getRingFoamScale(lodLevel: number): number
-	if lodLevel <= RING_LEVEL_NEAR then
-		return 1
-	end
-
-	if lodLevel == RING_LEVEL_MID then
-		return 0.42
-	end
-
-	return 0
-end
-
-local function applySurfaceAlphaVertices(
-	tile: InternalOceanTile,
-	ringIndices: buffer,
-	ringCount: number,
-	foamActive: boolean
-): (number, number)
-	local foamTotal = 0
-	local colorTotal = 0
-	local config = tile._Config
-
-	for entryIndex = 0, ringCount - 1 do
-		local entryOffset = ringLodEntryOffset(entryIndex)
-		local vertexIndex = buffer.readu16(ringIndices, entryOffset + RING_LOD_VERTEX_OFFSET)
-		local vertex = tile._Vertices[vertexIndex]
-
-		if vertex == nil then
-			continue
-		end
-
-		local foam = 0
-		local waterHeight = 0
-
-		if foamActive and vertex.foamEnabled then
-			foam = math.clamp(vertex.foamAccumulation, 0, 1)
-			waterHeight = math.clamp(vertex.waterHeight, 0, 1)
-		else
-			vertex.foamAccumulation = 0
-			vertex.waterHeight = 0
-		end
-
-		if config.FoamTextureFromVerticesEnabled then
-			vertex.foam = 0
-			vertex.colorFoam = 0
-			vertex.colorHeight = waterHeight
-			foamTotal += foam
-			colorTotal += math.max(foam, waterHeight)
-		else
-			vertex.foam = foam
-			vertex.colorFoam = foam
-			vertex.colorHeight = waterHeight
-			foamTotal += foam
-			colorTotal += math.max(foam, waterHeight)
-		end
-	end
-
-	return foamTotal, colorTotal
-end
-
 local function ensureRingLodCache(tile: InternalOceanTile, cameraLocalX: number, cameraLocalZ: number)
 	local config = tile._Config
 	local centerX = quantizeRingCenter(cameraLocalX, config.LodRecenterDistance)
@@ -1569,14 +1073,6 @@ local function ensureRingLodCache(tile: InternalOceanTile, cameraLocalX: number,
 		local lodLevel = getRingLodLevel(config, ringDistance, seamWidth)
 		local step = getRingLodStep(config, lodLevel)
 
-		if lodLevel >= RING_LEVEL_FAR then
-			vertex.colorFoam = 0
-			vertex.colorHeight = 0
-			vertex.foam = 0
-			vertex.foamAccumulation = 0
-			vertex.waterHeight = 0
-		end
-
 		if shouldUpdateLodVertex(tile, vertex, step) then
 			local offset = ringLodEntryOffset(entryCount)
 
@@ -1586,55 +1082,12 @@ local function ensureRingLodCache(tile: InternalOceanTile, cameraLocalX: number,
 		end
 	end
 
-	local maxFaceCount = #tile._Faces
-	local foamFaces = buffer.create(math.max(maxFaceCount, 1) * RING_FACE_ENTRY_BYTES)
-	local foamFaceCount = 0
-	local foamFaceRadius = config.Lod1Radius + seamWidth
-	local resolutionX = tile._ResolutionX
-	local resolutionZ = tile._ResolutionZ
-
-	for z = 0, resolutionZ - 1 do
-		local z0 = buffer.readf32(tile._GridZCoordinates, z * 4)
-		local z1 = buffer.readf32(tile._GridZCoordinates, (z + 1) * 4)
-		local cellZ = (z0 + z1) * 0.5
-
-		for x = 0, resolutionX - 1 do
-			local x0 = buffer.readf32(tile._GridXCoordinates, x * 4)
-			local x1 = buffer.readf32(tile._GridXCoordinates, (x + 1) * 4)
-			local cellX = (x0 + x1) * 0.5
-			local ringDistance = math.max(math.abs(cellX - centerX), math.abs(cellZ - centerZ))
-
-			if ringDistance <= foamFaceRadius then
-				local faceIndex = (z * resolutionX + x) * 2 + 1
-				local offsetA = ringFaceEntryOffset(foamFaceCount)
-
-				buffer.writeu16(foamFaces, offsetA, faceIndex)
-				foamFaceCount += 1
-
-				local offsetB = ringFaceEntryOffset(foamFaceCount)
-
-				buffer.writeu16(foamFaces, offsetB, faceIndex + 1)
-				foamFaceCount += 1
-			end
-		end
-	end
-
 	tile._RingLodIndices = indices
 	tile._RingLodCount = entryCount
 	tile._RingLodCenterX = centerX
 	tile._RingLodCenterZ = centerZ
 	tile._RingLodKey = key
 	tile._RingLodDirty = false
-
-	if tile._PreviousRingFoamFaceIndices ~= nil and tile._PreviousRingFoamFaceCount > 0 then
-		tile._RingFoamFullRefresh = true
-	else
-		tile._PreviousRingFoamFaceIndices = tile._RingFoamFaceIndices
-		tile._PreviousRingFoamFaceCount = tile._RingFoamFaceCount
-	end
-
-	tile._RingFoamFaceIndices = foamFaces
-	tile._RingFoamFaceCount = foamFaceCount
 end
 
 local function sampleDepth(depthMap: WaterDepthMap.WaterDepthMap?, config: TileConfig, localX: number, localZ: number): number
@@ -1645,7 +1098,7 @@ local function sampleDepth(depthMap: WaterDepthMap.WaterDepthMap?, config: TileC
 	return depthMap:SampleDepth(localX, localZ)
 end
 
-local function sampleObstacleFoam(obstacleMap: WaterObstacleMap.WaterObstacleMap?, localX: number, localZ: number): number
+local function sampleObstacleImpact(obstacleMap: WaterObstacleMap.WaterObstacleMap?, localX: number, localZ: number): number
 	if obstacleMap == nil then
 		return 0
 	end
@@ -1666,66 +1119,12 @@ local function sampleObstacleAttenuation(
 	return obstacleMap:GetWaveAttenuation(localX, localZ, strength)
 end
 
-local function updateFoamBuffer(
-	tile: InternalOceanTile,
-	time: number,
-	deltaTime: number,
-	detail: number,
-	physicsActive: boolean,
-	centerLocalX: number,
-	centerLocalZ: number,
-	radius: number
-)
-	local foamBuffer = tile._FoamBuffer
-	local waterBuffer = tile._WaterBuffer
-	local depthMap = tile._DepthMap
-	local obstacleMap = tile._ObstacleMap
-
-	if foamBuffer == nil then
-		return
-	end
-
-	if detail <= 0.12 then
-		return
-	end
-
-	local halfSize = tile.SourcePart.Size * 0.5
-	local minX = math.max(centerLocalX - radius, -halfSize.X)
-	local maxX = math.min(centerLocalX + radius, halfSize.X)
-	local minZ = math.max(centerLocalZ - radius, -halfSize.Z)
-	local maxZ = math.min(centerLocalZ + radius, halfSize.Z)
-	local quality = if physicsActive then 3 elseif detail > 0.45 then 2 else 1
-
-	if minX >= maxX or minZ >= maxZ then
-		return
-	end
-
-	foamBuffer:UpdateRegionFromMaps(
-		waterBuffer,
-		depthMap,
-		obstacleMap,
-		deltaTime,
-		minX,
-		maxX,
-		minZ,
-		maxZ,
-		quality
-	)
-
-	if time - tile._LastFoamMaxRecalculateTime >= FOAM_MAX_RECALCULATE_INTERVAL then
-		tile._LastFoamMaxRecalculateTime = time
-		foamBuffer:RecalculateMax()
-	end
-end
-
 local function getWaveLoopGeometryKey(config: TileConfig): string
-	return `{FOAM_BAKE_VERSION}:{math.clamp(math.round(config.WaveLoopFrames), 2, 240)}:{math.max(config.WaveLoopDuration, 0.25)}:{config.ShallowWaveScale}:{config.DeepWaveScale}:{config.ShallowDepth}:{config.LakeDepth}:{config.OceanDepth}:{config.ObstacleWaveDamping}`
+	return `{WAVE_BAKE_VERSION}:{math.clamp(math.round(config.WaveLoopFrames), 2, 240)}:{math.max(config.WaveLoopDuration, 0.25)}:{config.ShallowWaveScale}:{config.DeepWaveScale}:{config.ShallowDepth}:{config.LakeDepth}:{config.OceanDepth}:{config.ObstacleWaveDamping}`
 end
 
 local function getWaveLoopKey(config: TileConfig): string
-	local geometryKey = getWaveLoopGeometryKey(config)
-
-	return `{geometryKey}:crest-foam-gradient:{config.CrestFoamAlphaBack}:{config.CrestFoamAlphaTop}:{config.CrestFoamAlphaGain}`
+	return getWaveLoopGeometryKey(config)
 end
 
 local function bakeWaveLoop(tile: InternalOceanTile)
@@ -1735,7 +1134,6 @@ local function bakeWaveLoop(tile: InternalOceanTile)
 	local duration = math.max(config.WaveLoopDuration, 0.25)
 	local positions = buffer.create(vertexCount * frames * WAVE_LOOP_POSITION_BYTES)
 	local heights = buffer.create(vertexCount * frames * WAVE_LOOP_HEIGHT_BYTES)
-	local surface = buffer.create(vertexCount * frames * WAVE_LOOP_SURFACE_BYTES)
 	local static = buffer.create(vertexCount * VERTEX_BAKE_STATIC_BYTES)
 	local baseCFrame = tile.BaseCFrame
 	local obstacleVertices = buffer.create(MAX_OBSTACLE_IMPACT_VERTICES * OBSTACLE_IMPACT_VERTEX_BYTES)
@@ -1755,7 +1153,7 @@ local function bakeWaveLoop(tile: InternalOceanTile)
 		local oceanWeight = lakeToOcean
 		local lakeWeight = shallowToLake * (1 - lakeToOcean)
 		local deepFactor = smoothstep(config.ShallowDepth, oceanDepth, depth)
-		local obstacleSeed = if vertex.foamEnabled then sampleObstacleFoam(tile._ObstacleMap, localX, localZ) else 0
+		local obstacleSeed = if vertex.surfaceEnabled then sampleObstacleImpact(tile._ObstacleMap, localX, localZ) else 0
 		local obstacleAttenuation = sampleObstacleAttenuation(tile._ObstacleMap, localX, localZ, config.ObstacleWaveDamping)
 		local depthWaveScale = config.ShallowWaveScale + (config.DeepWaveScale - config.ShallowWaveScale) * deepFactor
 		local waveScale = depthWaveScale * obstacleAttenuation * vertex.waveInfluence
@@ -1767,7 +1165,7 @@ local function bakeWaveLoop(tile: InternalOceanTile)
 		buffer.writef32(static, vertexBakeStaticOffset(vertexIndex, VERTEX_STATIC_LAKE_WEIGHT), lakeWeight)
 		buffer.writef32(static, vertexBakeStaticOffset(vertexIndex, VERTEX_STATIC_SHALLOW_WEIGHT), shallowWeight)
 
-		if vertex.foamEnabled and obstacleSeed >= 0.55 and obstacleVertexCount < MAX_OBSTACLE_IMPACT_VERTICES then
+		if vertex.surfaceEnabled and obstacleSeed >= 0.55 and obstacleVertexCount < MAX_OBSTACLE_IMPACT_VERTICES then
 			obstacleVertexCount += 1
 			buffer.writeu16(obstacleVertices, obstacleImpactVertexOffset(obstacleVertexCount), vertexIndex)
 		end
@@ -1814,10 +1212,6 @@ local function bakeWaveLoop(tile: InternalOceanTile)
 			buffer.writef32(positions, positionOffset + 8, delta.Z)
 			buffer.writef32(heights, waveHeightOffset(frameIndex, vertexIndex, vertexCount), delta.Y)
 
-			local crestFoam, waterHeight = sampleCrestFoamShape(config, sampleHeight, waveScale)
-
-			writeWaveLoopSurface(config, surface, frameIndex, vertexIndex, vertexCount, crestFoam, waterHeight)
-
 			processedSinceYield += 1
 
 			if processedSinceYield >= BAKE_YIELD_CELL_BUDGET then
@@ -1829,7 +1223,6 @@ local function bakeWaveLoop(tile: InternalOceanTile)
 
 	tile._WaveLoopPositions = positions
 	tile._WaveLoopHeights = heights
-	tile._WaveLoopSurface = surface
 	tile._WaveLoopFrames = frames
 	tile._WaveLoopFrameStride = vertexCount
 	tile._WaveLoopDuration = duration
@@ -1845,7 +1238,6 @@ ensureWaveLoop = function(tile: InternalOceanTile)
 	if
 		tile._WaveLoopPositions ~= nil
 		and tile._WaveLoopHeights ~= nil
-		and tile._WaveLoopSurface ~= nil
 		and tile._WaveLoopKey == key
 	then
 		return
@@ -1882,38 +1274,16 @@ local function getWaveLoopFrame(tile: InternalOceanTile, time: number): (number,
 	return frameA, frameB, alpha
 end
 
-local function readWaveLoopSurface(
-	surface: buffer,
+local function readWaveLoopVertex(
+	positions: buffer,
 	frameA: number,
 	frameB: number,
 	alpha: number,
 	vertexCount: number,
 	vertexIndex: number
 ): (number, number, number)
-	local surfaceOffsetA = waveSurfaceOffset(frameA, vertexIndex, vertexCount)
-	local surfaceOffsetB = waveSurfaceOffset(frameB, vertexIndex, vertexCount)
-	local foamA = buffer.readu8(surface, surfaceOffsetA + WAVE_LOOP_SURFACE_FOAM) / 255
-	local foamB = buffer.readu8(surface, surfaceOffsetB + WAVE_LOOP_SURFACE_FOAM) / 255
-	local heightA = buffer.readu8(surface, surfaceOffsetA + WAVE_LOOP_SURFACE_HEIGHT) / 255
-	local heightB = buffer.readu8(surface, surfaceOffsetB + WAVE_LOOP_SURFACE_HEIGHT) / 255
-	local alphaA = buffer.readu8(surface, surfaceOffsetA + WAVE_LOOP_SURFACE_ALPHA) / 255
-	local alphaB = buffer.readu8(surface, surfaceOffsetB + WAVE_LOOP_SURFACE_ALPHA) / 255
-
-	return foamA + (foamB - foamA) * alpha, heightA + (heightB - heightA) * alpha, alphaA + (alphaB - alphaA) * alpha
-end
-
-local function readWaveLoopVertex(
-	positions: buffer,
-	surface: buffer,
-	frameA: number,
-	frameB: number,
-	alpha: number,
-	vertexCount: number,
-	vertexIndex: number
-): (number, number, number, number, number, number)
 	local offsetA = wavePositionOffset(frameA, vertexIndex, vertexCount, 0)
 	local offsetB = wavePositionOffset(frameB, vertexIndex, vertexCount, 0)
-	local foam, waterHeight, alphaValue = readWaveLoopSurface(surface, frameA, frameB, alpha, vertexCount, vertexIndex)
 	local ax = buffer.readf32(positions, offsetA)
 	local ay = buffer.readf32(positions, offsetA + 4)
 	local az = buffer.readf32(positions, offsetA + 8)
@@ -1921,61 +1291,21 @@ local function readWaveLoopVertex(
 	return
 		ax + (buffer.readf32(positions, offsetB) - ax) * alpha,
 		ay + (buffer.readf32(positions, offsetB + 4) - ay) * alpha,
-		az + (buffer.readf32(positions, offsetB + 8) - az) * alpha,
-		foam,
-		waterHeight,
-		alphaValue
+		az + (buffer.readf32(positions, offsetB + 8) - az) * alpha
 end
 
-sampleWaveLoopSurfaceField = function(tile: InternalOceanTile, localX: number, localZ: number, time: number): (number, number)
-	ensureWaveLoop(tile)
-
-	local surface = tile._WaveLoopSurface
-
-	if surface == nil then
-		return 0, 0
-	end
-
-	local surfaceBuffer = surface
-	local resolutionX = tile._ResolutionX
-	local resolutionZ = tile._ResolutionZ
-	local x0, x1, tx = getAxisCell(tile._GridXCoordinates, resolutionX, localX)
-	local z0, z1, tz = getAxisCell(tile._GridZCoordinates, resolutionZ, localZ)
-	local frameA, frameB, alpha = getWaveLoopFrame(tile, time)
-	local vertexCount = math.max(tile._WaveLoopFrameStride, 1)
-
-	local function readSurface(vertexIndex: number): (number, number)
-		local foam, waterHeight = readWaveLoopSurface(surfaceBuffer, frameA, frameB, alpha, vertexCount, vertexIndex)
-
-		return foam, waterHeight
-	end
-
-	local foam00, height00 = readSurface(gridIndex(resolutionX, x0, z0))
-	local foam10, height10 = readSurface(gridIndex(resolutionX, x1, z0))
-	local foam01, height01 = readSurface(gridIndex(resolutionX, x0, z1))
-	local foam11, height11 = readSurface(gridIndex(resolutionX, x1, z1))
-	local foam0 = foam00 + (foam10 - foam00) * tx
-	local foam1 = foam01 + (foam11 - foam01) * tx
-	local height0 = height00 + (height10 - height00) * tx
-	local height1 = height01 + (height11 - height01) * tx
-
-	return foam0 + (foam1 - foam0) * tz, height0 + (height1 - height0) * tz
-end
-
-local function sampleWaveLoop(tile: InternalOceanTile, vertexIndex: number, time: number): (Vector3, number)
+local function sampleWaveLoop(tile: InternalOceanTile, vertexIndex: number, time: number): Vector3
 	ensureWaveLoop(tile)
 
 	local positions = tile._WaveLoopPositions
-	local surface = tile._WaveLoopSurface
 
-	if positions == nil or surface == nil then
-		return Vector3.zero, 0
+	if positions == nil then
+		return Vector3.zero
 	end
 
 	local frameA, frameB, alpha = getWaveLoopFrame(tile, time)
-	local dx, dy, dz, bakedCrestFoam = readWaveLoopVertex(
+	local dx, dy, dz = readWaveLoopVertex(
 		positions,
-		surface,
 		frameA,
 		frameB,
 		alpha,
@@ -1983,7 +1313,7 @@ local function sampleWaveLoop(tile: InternalOceanTile, vertexIndex: number, time
 		vertexIndex
 	)
 
-	return Vector3.new(dx, dy, dz), bakedCrestFoam
+	return Vector3.new(dx, dy, dz)
 end
 
 local function readWaveLoopHeight(
@@ -2025,300 +1355,18 @@ local function sampleBakedHeight(tile: InternalOceanTile, localX: number, localZ
 	return a + (b - a) * tz
 end
 
-local function sampleFoamImagePixel(
-	tile: InternalOceanTile,
-	localX: number,
-	localZ: number,
-	time: number,
-	useLiveSurfaceBuffer: boolean
-): (number, number, number, number)
-	local config = tile._Config
-	local foamBuffer = tile._FoamBuffer
-	local foamField = 0
-	local waterHeight = 0
-
-	if useLiveSurfaceBuffer and foamBuffer ~= nil then
-		local crestFoam, waveHeight = sampleWaveLoopSurfaceField(tile, localX, localZ, time)
-
-		foamField = math.max(foamBuffer:SampleFoam(localX, localZ), crestFoam)
-		waterHeight = waveHeight
-	else
-		local crestFoam, waveHeight = sampleWaveLoopSurfaceField(tile, localX, localZ, time)
-
-		foamField = crestFoam
-		waterHeight = waveHeight
-	end
-
-	local foamLayerOpacity = 1 - math.clamp(config.FoamTextureTransparency, 0, 1)
-	local finalFoam = math.clamp(math.clamp(foamField, 0, 1) * foamLayerOpacity, 0, 1)
-	local color, alpha = blendSurfaceColor(config, finalFoam, waterHeight)
-
-	return color.R, color.G, color.B, alpha
-end
-
-local function getFoamTextureBakeKey(tile: InternalOceanTile, size: number): string
-	local config = tile._Config
-	local sourceSize = tile.SourcePart.Size
-	local waterColor = config.WaterColorBack or config.WaterColor or DEFAULT_WATER_COLOR_BACK
-	local waterTintColor = config.WaterColorTop or config.WaterTintColor or DEFAULT_WATER_COLOR_TOP
-	local foamColor = config.FoamColor
-
-	return `{size}:{sourceSize.X}:{sourceSize.Z}:{config.FoamTextureTransparency}:{config.WaterVertexAlpha}:{config.FoamVertexAlpha}:{waterColor.R}:{waterColor.G}:{waterColor.B}:{waterTintColor.R}:{waterTintColor.G}:{waterTintColor.B}:{config.WaterColorGain}:{config.CrestFoamAlphaBack}:{config.CrestFoamAlphaTop}:{config.CrestFoamAlphaGain}:{foamColor.R}:{foamColor.G}:{foamColor.B}:{getWaveLoopKey(config)}`
-end
-
-local function foamTexturePixelOffset(size: number, x: number, y: number): number
-	return (y * size + x) * 4
-end
-
-local function ensureFoamTextureBake(tile: InternalOceanTile, size: number)
-	local key = getFoamTextureBakeKey(tile, size)
-
-	if tile._FoamTextureBake ~= nil and tile._FoamTextureBakeKey == key then
-		return
-	end
-
-	local frames = math.clamp(math.round(tile._Config.WaveLoopFrames / 4), 4, if size <= 128 then 16 else 8)
-	local duration = math.max(tile._Config.WaveLoopDuration, 0.25)
-	local framesByIndex = table.create(frames) :: { buffer }
-	local processedSinceYield = 0
-
-	for frameIndex = 0, frames - 1 do
-		local bakeTime = (frameIndex / frames) * duration
-		local bytes = buffer.create(size * size * 4)
-
-		for y = 0, size - 1 do
-			local v = (y + 0.5) / size
-			local localZ = (v - 0.5) * tile.SourcePart.Size.Z
-
-			for x = 0, size - 1 do
-				local u = (x + 0.5) / size
-				local localX = (u - 0.5) * tile.SourcePart.Size.X
-				local red, green, blue, alpha = sampleFoamImagePixel(tile, localX, localZ, bakeTime, false)
-				local offset = foamTexturePixelOffset(size, x, y)
-
-				buffer.writeu8(bytes, offset, math.clamp(math.floor(red * 255 + 0.5), 0, 255))
-				buffer.writeu8(bytes, offset + 1, math.clamp(math.floor(green * 255 + 0.5), 0, 255))
-				buffer.writeu8(bytes, offset + 2, math.clamp(math.floor(blue * 255 + 0.5), 0, 255))
-				buffer.writeu8(bytes, offset + 3, math.clamp(math.floor(alpha * 255 + 0.5), 0, 255))
-
-				processedSinceYield += 1
-
-				if processedSinceYield >= BAKE_YIELD_CELL_BUDGET then
-					processedSinceYield = 0
-					task.wait()
-				end
-			end
-		end
-
-		framesByIndex[frameIndex + 1] = bytes
-	end
-
-	tile._FoamTextureBake = framesByIndex
-	tile._FoamTextureBakeKey = key
-	tile._FoamTextureBakeFrames = frames
-	tile._FoamTextureBakeSize = size
-end
-
-local function writeRuntimeFoamTexture(tile: InternalOceanTile, editableImage: EditableImage, size: number, time: number)
-	local bytes = buffer.create(size * size * 4)
-
-	for y = 0, size - 1 do
-		local v = (y + 0.5) / size
-		local localZ = (v - 0.5) * tile.SourcePart.Size.Z
-
-		for x = 0, size - 1 do
-			local u = (x + 0.5) / size
-			local localX = (u - 0.5) * tile.SourcePart.Size.X
-			local red, green, blue, alpha = sampleFoamImagePixel(tile, localX, localZ, time, true)
-			local offset = foamTexturePixelOffset(size, x, y)
-
-			buffer.writeu8(bytes, offset, math.clamp(math.floor(red * 255 + 0.5), 0, 255))
-			buffer.writeu8(bytes, offset + 1, math.clamp(math.floor(green * 255 + 0.5), 0, 255))
-			buffer.writeu8(bytes, offset + 2, math.clamp(math.floor(blue * 255 + 0.5), 0, 255))
-			buffer.writeu8(bytes, offset + 3, math.clamp(math.floor(alpha * 255 + 0.5), 0, 255))
-		end
-	end
-
-	tile._FoamImageBuffer = bytes
-	tile._FoamTextureRowCursor = 0
-	tile._FoamTextureBake = nil
-	tile._FoamTextureBakeKey = ""
-	tile._FoamTextureBakeFrames = 0
-	tile._FoamTextureBakeSize = size
-	editableImage:WritePixelsBuffer(Vector2.zero, Vector2.new(size, size), bytes)
-end
-
 function OceanTileClass:_SetFlat()
 	if self._IsFlat then
 		return
 	end
 
 	for _, vertex in ipairs(self._Vertices) do
-		vertex.colorFoam = 0
-		vertex.colorHeight = 0
-		vertex.foam = 0
-		vertex.foamAccumulation = 0
-		vertex.waterHeight = 0
-		applyVertexSurfaceColor(self, vertex)
-
 		if not trySetVertexPosition(self, vertex.id, vertex.baseLocal) then
 			return
 		end
 	end
 
 	self._IsFlat = true
-end
-
-function OceanTileClass:_UpdateFoamColors(time: number)
-	if not self._VertexColorsEnabled then
-		return
-	end
-
-	if time - self._LastFoamColorUpdate < self._Config.FoamColorUpdateInterval then
-		return
-	end
-
-	self._LastFoamColorUpdate = time
-
-	local function updateFaceVertices(face: FaceState): boolean
-		local vertexA = self._Vertices[face.a]
-		local vertexB = self._Vertices[face.b]
-		local vertexC = self._Vertices[face.c]
-
-		return (vertexA == nil or applyVertexSurfaceColor(self, vertexA))
-			and (vertexB == nil or applyVertexSurfaceColor(self, vertexB))
-			and (vertexC == nil or applyVertexSurfaceColor(self, vertexC))
-	end
-
-	if self._RingFoamFullRefresh then
-		self._RingFoamFullRefresh = false
-		self._PreviousRingFoamFaceIndices = nil
-		self._PreviousRingFoamFaceCount = 0
-
-		for _, face in ipairs(self._Faces) do
-			if not updateFaceVertices(face) then
-				return
-			end
-		end
-
-		return
-	end
-
-	local previousFaceIndices = self._PreviousRingFoamFaceIndices
-
-	if previousFaceIndices ~= nil and self._PreviousRingFoamFaceCount > 0 then
-		for entryIndex = 0, self._PreviousRingFoamFaceCount - 1 do
-			local faceIndex = buffer.readu16(previousFaceIndices, ringFaceEntryOffset(entryIndex))
-			local face = self._Faces[faceIndex]
-
-			if face ~= nil and not updateFaceVertices(face) then
-				return
-			end
-		end
-
-		self._PreviousRingFoamFaceIndices = nil
-		self._PreviousRingFoamFaceCount = 0
-	end
-
-	local faceIndices = self._RingFoamFaceIndices
-
-	if faceIndices == nil or self._RingFoamFaceCount <= 0 then
-		return
-	end
-
-	for entryIndex = 0, self._RingFoamFaceCount - 1 do
-		local faceIndex = buffer.readu16(faceIndices, ringFaceEntryOffset(entryIndex))
-		local face = self._Faces[faceIndex]
-
-		if face ~= nil and not updateFaceVertices(face) then
-			return
-		end
-	end
-end
-
-function OceanTileClass:_UpdateFoamTexture(time: number)
-	if not usesGeneratedSurfaceTexture(self._Config) then
-		return
-	end
-
-	if time - self._LastFoamTextureUpdate < self._Config.FoamTextureUpdateInterval then
-		return
-	end
-
-	local editableImage = self._FoamEditableImage
-
-	if editableImage == nil then
-		return
-	end
-
-	self._LastFoamTextureUpdate = time
-	local size = math.clamp(math.round(self._Config.FoamTextureResolution), 16, 1024)
-
-	if self._Config.RuntimeSurfaceColorEnabled then
-		writeRuntimeFoamTexture(self, editableImage, size, time)
-		return
-	end
-
-	ensureFoamTextureBake(self, size)
-	local frames = self._FoamTextureBake
-	local frameCount = self._FoamTextureBakeFrames
-
-	if frames == nil or frameCount <= 0 or self._FoamTextureBakeSize ~= size then
-		return
-	end
-
-	local duration = math.max(self._Config.WaveLoopDuration, 0.25)
-	local frameIndex = (math.floor(((time % duration) / duration) * frameCount) % frameCount) + 1
-	local bytes = frames[frameIndex]
-
-	if bytes == nil then
-		return
-	end
-
-	self._FoamImageBuffer = bytes
-	self._FoamTextureRowCursor = frameIndex
-	editableImage:WritePixelsBuffer(Vector2.zero, Vector2.new(size, size), bytes)
-end
-
-function OceanTileClass:_ClearFoam()
-	if not self._FoamVisible then
-		return
-	end
-
-	for _, vertex in ipairs(self._Vertices) do
-		vertex.colorFoam = 0
-		vertex.colorHeight = 0
-		vertex.foam = 0
-		vertex.foamAccumulation = 0
-		vertex.waterHeight = 0
-		applyVertexSurfaceColor(self, vertex)
-	end
-
-	if usesGeneratedSurfaceTexture(self._Config) and self._FoamEditableImage ~= nil and self._FoamImageBuffer ~= nil then
-		local size = math.clamp(math.round(self._Config.FoamTextureResolution), 16, 1024)
-		local blank = buffer.create(size * size * 4)
-
-		for index = 0, size * size - 1 do
-			local offset = index * 4
-
-			buffer.writeu8(blank, offset, 255)
-			buffer.writeu8(blank, offset + 1, 255)
-			buffer.writeu8(blank, offset + 2, 255)
-			buffer.writeu8(blank, offset + 3, 0)
-		end
-
-		self._FoamEditableImage:WritePixelsBuffer(Vector2.zero, Vector2.new(size, size), blank)
-		self._FoamTextureRowCursor = 0
-	end
-
-	if self._SeaSprayEmitter then
-		self._SeaSprayEmitter.Rate = 0
-	end
-
-	self._PreviousRingFoamFaceIndices = nil
-	self._PreviousRingFoamFaceCount = 0
-	self._RingFoamFullRefresh = false
-	self._FoamVisible = false
 end
 
 function OceanTileClass:Update(time: number, camera: Camera?, renderVisible: boolean?)
@@ -2342,15 +1390,11 @@ function OceanTileClass:Update(time: number, camera: Camera?, renderVisible: boo
 			self._WaterBuffer:Clear()
 		end
 
-		if self._FoamBuffer ~= nil and self._FoamBuffer.MaxValue > 0 then
-			self._FoamBuffer:Clear()
-		end
-
 		self:_SetFlat()
 		return
 	end
 
-	local foamActive = distance <= self._Config.FoamDistance and detail > 0.35
+	local surfaceEffectsActive = distance <= self._Config.FoamDistance and detail > 0.35
 	local waterBuffer = self._WaterBuffer
 	local physicsActive = waterBuffer ~= nil
 		and distance <= self._Config.PhysicsDistance
@@ -2368,12 +1412,6 @@ function OceanTileClass:Update(time: number, camera: Camera?, renderVisible: boo
 
 	if self._InteractionWakeFrames > 0 then
 		self._InteractionWakeFrames = if physicsActive then self._InteractionWakeFrames - 1 else 0
-	end
-
-	if foamActive and self._FoamBuffer ~= nil then
-		updateFoamBuffer(self, time, deltaTime, detail, physicsActive, cameraLocal.X, cameraLocal.Z, self._Config.FoamDistance)
-	elseif not foamActive and self._FoamBuffer ~= nil and self._FoamBuffer.MaxValue > 0 then
-		self._FoamBuffer:Clear()
 	end
 
 	if renderVisible == false then
@@ -2394,11 +1432,7 @@ function OceanTileClass:Update(time: number, camera: Camera?, renderVisible: boo
 		)
 	end
 
-	local bakedSurfaceTexture = isFinalBakedSurfaceTexture(self._Config)
-	local foamTotal = 0
-	local colorTotal = 0
 	local positions: buffer? = nil
-	local waveSurface: buffer? = nil
 	local frameA = 0
 	local frameB = 0
 	local frameAlpha = 0
@@ -2406,9 +1440,8 @@ function OceanTileClass:Update(time: number, camera: Camera?, renderVisible: boo
 
 	ensureWaveLoop(self)
 	positions = self._WaveLoopPositions
-	waveSurface = self._WaveLoopSurface
 
-	if positions ~= nil and waveSurface ~= nil then
+	if positions ~= nil then
 		frameA, frameB, frameAlpha = getWaveLoopFrame(self, time)
 		vertexCount = math.max(self._WaveLoopFrameStride, 1)
 	end
@@ -2417,7 +1450,6 @@ function OceanTileClass:Update(time: number, camera: Camera?, renderVisible: boo
 	ensureRingLodCache(self, cameraLocal.X, cameraLocal.Z)
 
 	local ringIndices = self._RingLodIndices
-	local updatedVertexCount = 0
 
 	if ringIndices == nil then
 		return
@@ -2433,21 +1465,16 @@ function OceanTileClass:Update(time: number, camera: Camera?, renderVisible: boo
 			continue
 		end
 
-		updatedVertexCount += 1
-
 		local vertexDetail = getRingLodDetail(self._Config, detail, lodLevel)
 		local vertexDistanceFactor = getRingDistanceFactor(distanceFactor, lodLevel)
 
 		local dx = 0
 		local dy = 0
 		local dz = 0
-		local bakedCrestFoam = 0
-		local bakedCrest = 0
 
-		if positions ~= nil and waveSurface ~= nil then
-			dx, dy, dz, bakedCrestFoam, bakedCrest = readWaveLoopVertex(
+		if positions ~= nil then
+			dx, dy, dz = readWaveLoopVertex(
 				positions,
-				waveSurface,
 				frameA,
 				frameB,
 				frameAlpha,
@@ -2457,42 +1484,10 @@ function OceanTileClass:Update(time: number, camera: Camera?, renderVisible: boo
 		end
 
 		local baseLocal = vertex.baseLocal
-		local surfaceFoamScale = if foamActive and vertex.foamEnabled then getRingFoamScale(lodLevel) else 0
-		local dynamicFoamActive = foamActive and vertex.foamEnabled and surfaceFoamScale > 0
-		local interactiveHeight = if interactiveBufferActive and waterBuffer ~= nil and vertex.foamEnabled and lodLevel == RING_LEVEL_NEAR
+		local interactiveHeight = if interactiveBufferActive and waterBuffer ~= nil and vertex.surfaceEnabled and lodLevel == RING_LEVEL_NEAR
 			then waterBuffer:SampleHeight(baseLocal.X, baseLocal.Z)
 			else 0
 		local vertexWaveScale = vertexDetail * vertexDistanceFactor
-
-		if bakedSurfaceTexture then
-			foamTotal += math.clamp(bakedCrestFoam * vertexDetail * vertexDistanceFactor, 0, 1)
-			vertex.foamAccumulation = 0
-			vertex.waterHeight = 0
-
-			local localPosition = Vector3.new(
-				baseLocal.X + dx * vertexWaveScale,
-				baseLocal.Y + dy * vertexWaveScale + interactiveHeight * vertexDistanceFactor,
-				baseLocal.Z + dz * vertexWaveScale
-			)
-
-			if not trySetVertexPosition(self, vertex.id, localPosition) then
-				return
-			end
-
-			continue
-		end
-
-		local fallbackInteractiveFoam = if self._FoamBuffer == nil and dynamicFoamActive and interactiveBufferActive and waterBuffer ~= nil
-			then sampleInteractiveFoam(self._Config, waterBuffer, baseLocal.X, baseLocal.Z)
-			else 0
-
-		local bufferedFoam = if dynamicFoamActive and self._FoamBuffer ~= nil
-			then self._FoamBuffer:SampleFoam(baseLocal.X, baseLocal.Z)
-			else 0
-		local directCrestFoam = bakedCrestFoam * vertexDetail
-		local foamField = math.max(bufferedFoam, directCrestFoam, fallbackInteractiveFoam)
-		local foamSeed = if surfaceFoamScale > 0 then foamField * surfaceFoamScale else 0
-		local waterHeight = math.clamp(bakedCrest * vertexDetail * vertexDistanceFactor, 0, 1)
 
 		local localPosition = Vector3.new(
 			baseLocal.X + dx * vertexWaveScale,
@@ -2500,39 +1495,20 @@ function OceanTileClass:Update(time: number, camera: Camera?, renderVisible: boo
 			baseLocal.Z + dz * vertexWaveScale
 		)
 
-		vertex.foamAccumulation = math.clamp(foamSeed * vertexDistanceFactor, 0, 1)
-		vertex.waterHeight = waterHeight
 		if not trySetVertexPosition(self, vertex.id, localPosition) then
 			return
 		end
 	end
 
-	if not bakedSurfaceTexture then
-		foamTotal, colorTotal = applySurfaceAlphaVertices(self, ringIndices, self._RingLodCount, foamActive)
-	end
 	self._IsFlat = false
 
-	if foamActive then
-		if self._Config.FoamTextureFromVerticesEnabled then
-			self:_UpdateFoamColors(time)
-		end
-
-		self:_UpdateFoamTexture(time)
-		self._FoamVisible = if usesGeneratedSurfaceTexture(self._Config)
-			then self._FoamEditableImage ~= nil
-			else foamTotal > 0.001 or colorTotal > 0.001
-	else
-		self:_ClearFoam()
-	end
-
 	if self._SeaSprayEmitter then
-		local averageFoam = if foamActive then foamTotal / math.max(updatedVertexCount, 1) else 0
-		self._SeaSprayEmitter.Rate = averageFoam * self._Config.SeaSprayRate
+		self._SeaSprayEmitter.Rate = 0
 	end
 
 	if self._Config.StaticObstacleSplashEnabled
 		and self._SplashEmitter ~= nil
-		and foamActive
+		and surfaceEffectsActive
 		and physicsActive
 		and self._ObstacleImpactVertexCount > 0
 		and self._ObstacleImpactVertices ~= nil
@@ -2570,13 +1546,7 @@ function OceanTileClass:SetSpectrum(spectrum: WaveSpectrum.WaveSpectrum)
 	self._Spectrum = spectrum
 	self._WaveLoopPositions = nil
 	self._WaveLoopHeights = nil
-	self._WaveLoopSurface = nil
 	self._WaveLoopKey = ""
-	self._FoamTextureBake = nil
-	self._FoamTextureBakeKey = ""
-	self._FoamTextureBakeFrames = 0
-	self._FoamTextureBakeSize = 0
-	self._LastFoamTextureUpdate = 0
 end
 
 function OceanTileClass:SetConfig(config: TileConfig)
@@ -2584,11 +1554,8 @@ function OceanTileClass:SetConfig(config: TileConfig)
 	local previousWaveLoopKey = getWaveLoopKey(previousConfig)
 	local keepWaveLoop = self._WaveLoopPositions ~= nil
 		and self._WaveLoopHeights ~= nil
-		and self._WaveLoopSurface ~= nil
 		and getWaveLoopGeometryKey(previousConfig) == getWaveLoopGeometryKey(config)
 		and previousWaveLoopKey == getWaveLoopKey(config)
-	local surfaceSourceChanged = previousWaveLoopKey ~= getWaveLoopKey(config)
-		or previousConfig.RuntimeSurfaceColorEnabled ~= config.RuntimeSurfaceColorEnabled
 
 	self._Config = config
 
@@ -2597,40 +1564,17 @@ function OceanTileClass:SetConfig(config: TileConfig)
 	else
 		self._WaveLoopPositions = nil
 		self._WaveLoopHeights = nil
-		self._WaveLoopSurface = nil
 		self._WaveLoopKey = ""
 	end
 
-	self._FoamTextureBake = nil
-	self._FoamTextureBakeKey = ""
-	self._FoamTextureBakeFrames = 0
-	self._FoamTextureBakeSize = 0
-	self._LastFoamTextureUpdate = 0
 	self._RingLodIndices = nil
 	self._RingLodCount = 0
 	self._RingLodKey = ""
 	self._RingLodDirty = true
-	self._RingFoamFaceIndices = nil
-	self._RingFoamFaceCount = 0
-	self._PreviousRingFoamFaceIndices = nil
-	self._PreviousRingFoamFaceCount = 0
-	self._RingFoamFullRefresh = true
 	self._ObstacleImpactVertices = nil
 	self._ObstacleImpactVertexCount = 0
 
-	for _, vertex in ipairs(self._Vertices) do
-		vertex.colorFoam = 0
-		vertex.colorHeight = 0
-		vertex.appliedColorFoam = -1
-		vertex.appliedColorHeight = -1
-		applyVertexSurfaceColor(self, vertex)
-	end
-
-	for _, face in ipairs(self._Faces) do
-		setFaceVertexColors(self, face)
-	end
-
-	self.MeshPart.Color = if self._VertexColorsEnabled then VERTEX_COLOR_TINT else (config.WaterColorBack or DEFAULT_WATER_COLOR_BACK)
+	self.MeshPart.Color = config.WaterColorBack
 	self.MeshPart.Transparency = config.Transparency
 	self.MeshPart.Reflectance = config.Reflectance
 
@@ -2640,29 +1584,6 @@ function OceanTileClass:SetConfig(config: TileConfig)
 		self._WaterBuffer = nil
 	end
 
-	if usesSurfaceBufferForVisuals(config) and config.FoamBufferEnabled then
-		local foamBuffer = self._FoamBuffer
-		local sizeX = math.max(self.SourcePart.Size.X, 1)
-		local sizeZ = math.max(self.SourcePart.Size.Z, 1)
-
-		if foamBuffer == nil
-			or foamBuffer.Resolution ~= math.clamp(math.floor(config.FoamBufferResolution), 2, 62)
-			or foamBuffer.SizeX ~= sizeX
-			or foamBuffer.SizeZ ~= sizeZ
-		then
-			self._FoamBuffer = createFoamBuffer(self.SourcePart, config)
-		else
-			configureFoamBuffer(foamBuffer, config)
-
-			if surfaceSourceChanged then
-				foamBuffer:Clear()
-			end
-		end
-	else
-		self._FoamBuffer = nil
-	end
-
-	configureFoamTexture(self)
 	configureSeaSpray(self)
 	configureSplashParticles(self)
 end
@@ -2679,28 +1600,12 @@ function OceanTileClass:AddDrop(worldPosition: Vector3, radius: number, strength
 	waterBuffer:AddDrop(localPosition.X, localPosition.Z, radius, strength)
 	self._InteractionWakeFrames = math.max(self._InteractionWakeFrames, 72)
 
-	if self._FoamBuffer ~= nil then
-		local foamAmount = math.clamp(math.abs(strength) * 0.75 + math.min(radius / 18, 1) * 0.28, 0.08, 1)
-
-		self._FoamBuffer:AddFoam(localPosition.X, localPosition.Z, radius * 1.25, foamAmount)
-	end
-
 	if math.abs(strength) >= 0.12 then
 		self:EmitSplash(worldPosition, math.abs(strength), radius)
 	end
 end
 
-function OceanTileClass:AddFoam(worldPosition: Vector3, radius: number, amount: number)
-	local foamBuffer = self._FoamBuffer
-
-	if foamBuffer == nil or radius <= 0 or amount <= 0 or not isWorldPositionNearCamera(worldPosition, self._Config.FoamDistance) then
-		return
-	end
-
-	local localPosition = self.BaseCFrame:PointToObjectSpace(worldPosition)
-
-	foamBuffer:AddFoam(localPosition.X, localPosition.Z, radius, amount)
-	self._InteractionWakeFrames = math.max(self._InteractionWakeFrames, 72)
+function OceanTileClass:AddFoam(_worldPosition: Vector3, _radius: number, _amount: number)
 end
 
 function OceanTileClass:MoveSphere(oldWorldCenter: Vector3, newWorldCenter: Vector3, radius: number, strengthScale: number?)
@@ -2715,13 +1620,6 @@ function OceanTileClass:MoveSphere(oldWorldCenter: Vector3, newWorldCenter: Vect
 
 	waterBuffer:MoveSphere(oldLocal, newLocal, radius, strengthScale)
 	self._InteractionWakeFrames = math.max(self._InteractionWakeFrames, 60)
-
-	if self._FoamBuffer ~= nil then
-		local movement = (newWorldCenter - oldWorldCenter).Magnitude
-		local strength = math.clamp(movement / math.max(radius, 0.1), 0, 1) * (strengthScale or 1)
-
-		self._FoamBuffer:AddFoam(newLocal.X, newLocal.Z, radius * 1.15, math.clamp(strength * 0.85 + 0.04, 0, 1))
-	end
 end
 
 function OceanTileClass:EmitSplash(worldPosition: Vector3, intensity: number, radius: number?, direction: Vector3?)
@@ -2885,17 +1783,6 @@ function OceanTileClass:Destroy()
 			self.EditableMesh:Destroy()
 		end)
 	end
-
-	if self._FoamEditableImage then
-		self._FoamEditableImage:Destroy()
-		self._FoamEditableImage = nil
-	end
-
-	self._FoamImageBuffer = nil
-	self._FoamTextureBake = nil
-	self._FoamTextureBakeKey = ""
-	self._FoamTextureBakeFrames = 0
-	self._FoamTextureBakeSize = 0
 end
 
 local OceanTile = {}
@@ -2927,22 +1814,9 @@ function OceanTile.new(
 		_GridZCoordinates = gridZCoordinates,
 		_Vertices = {},
 		_Faces = {},
-		_VertexColorsEnabled = true,
 		_WaterBuffer = createWaterBuffer(sourcePart, config),
 		_DepthMap = createDepthMap(sourcePart, parent, config),
 		_ObstacleMap = createObstacleMap(sourcePart, parent, config),
-		_FoamBuffer = createFoamBuffer(sourcePart, config),
-		_FoamTexture = nil,
-		_FoamEditableImage = nil,
-		_FoamTextureKey = nil,
-		_FoamImageBuffer = nil,
-		_FoamTextureRowCursor = 0,
-		_FoamTextureBake = nil,
-		_FoamTextureBakeKey = "",
-		_FoamTextureBakeFrames = 0,
-		_FoamTextureBakeSize = 0,
-		_LastFoamTextureUpdate = 0,
-		_UvEnabled = true,
 		_SeaSprayAttachment = nil,
 		_SeaSprayEmitter = nil,
 		_SplashAttachment = nil,
@@ -2953,8 +1827,6 @@ function OceanTile.new(
 		_MeshInvalid = false,
 		_IsFlat = false,
 		_LastUpdateTime = -1,
-		_LastFoamColorUpdate = 0,
-		_FoamVisible = false,
 		_InteractionWakeFrames = 0,
 		_RingLodIndices = nil,
 		_RingLodCount = 0,
@@ -2962,14 +1834,8 @@ function OceanTile.new(
 		_RingLodCenterZ = 0,
 		_RingLodKey = "",
 		_RingLodDirty = true,
-		_RingFoamFaceIndices = nil,
-		_RingFoamFaceCount = 0,
-		_PreviousRingFoamFaceIndices = nil,
-		_PreviousRingFoamFaceCount = 0,
-		_RingFoamFullRefresh = false,
 		_WaveLoopPositions = nil,
 		_WaveLoopHeights = nil,
-		_WaveLoopSurface = nil,
 		_WaveLoopFrames = 0,
 		_WaveLoopFrameStride = 0,
 		_WaveLoopDuration = math.max(config.WaveLoopDuration, 0.25),
@@ -2978,7 +1844,6 @@ function OceanTile.new(
 		_ObstacleImpactVertices = nil,
 		_ObstacleImpactVertexCount = 0,
 		_LastObstacleSplashTime = 0,
-		_LastFoamMaxRecalculateTime = 0,
 	}, OceanTileClass) :: any
 
 	buildMesh(tile)
@@ -2996,11 +1861,10 @@ function OceanTile.new(
 		return nil, "Ocean tile parent was destroyed"
 	end
 
-	configureMeshPart(meshPart, sourcePart, config, tile._VertexColorsEnabled)
+	configureMeshPart(meshPart, sourcePart, config)
 	meshPart.CFrame = tile.BaseCFrame
 	meshPart.Parent = parent
 	tile.MeshPart = meshPart
-	configureFoamTexture(tile)
 	configureSeaSpray(tile)
 	configureSplashParticles(tile)
 

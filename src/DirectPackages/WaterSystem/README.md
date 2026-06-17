@@ -112,7 +112,7 @@ O sistema cria um painel runtime estilo Godot/ImGui quando o cliente inicia.
 - `OceanShoreFoamStrength` number: foam gerado por agua rasa/praia. Padrao `0.62`.
 - `OceanCrestFoamAlphaBack` number: alpha do foam de crista quando a mascara fina de crista e `0`. Padrao `0`.
 - `OceanCrestFoamAlphaTop` number: alpha do foam de crista quando a mascara fina de crista e `1`. Padrao `1`.
-- `OceanCrestFoamAlphaGain` number: ganho do gradiente de alpha do foam de crista, igual ao modelo de `OceanWaterColorGain`, mas separado do gradiente verde da agua. Padrao `0.9`.
+- `OceanCrestFoamAlphaGain` number: ganho do gradiente de alpha do foam de crista. Valores maiores deixam a espuma mais concentrada no topo da crista, separado do gradiente verde da agua. Padrao `0.9`.
 - `OceanPhysicalInteractionEnabled` boolean: ativa interacao automatica com partes fisicas. Padrao `true`.
 - `OceanPlayerInteractionEnabled` boolean: usa apenas `HumanoidRootPart` como caixa do player. Padrao `true`.
 - `OceanBuoyancyEnabled` boolean: ativa empuxo automatico em Parts nao anchored, separado do player. Padrao `true`.
@@ -164,7 +164,7 @@ O sistema cria um painel runtime estilo Godot/ImGui quando o cliente inicia.
 - `OceanFoamVertexAlpha` number: alpha usado no `EditableMesh:AddColor` para vertices com espuma cheia. Padrao `1`.
 - `OceanFoamVertexBoost` number: multiplicador da mascara de espuma pintada nos vertices. Padrao `1.35`.
 - `OceanFoamNoiseInfluence` number: influencia do recorte lateral fino usado apenas no fallback por cor de vertice. A textura final baked/runtime nao usa este recorte. Padrao `0.72`; `0` nao recorta, `1` usa todo o pattern.
-- `OceanRuntimeSurfaceColorEnabled` boolean: quando `true`, a textura final le o `FoamBuffer` vivo por pixel e aplica agua + tint + foam ja mesclados. Quando `false` com `OceanFoamTextureFromVerticesEnabled=false`, usa somente frames bakeados finais do loop de onda. Padrao `false`.
+- `OceanRuntimeSurfaceColorEnabled` boolean: quando `true`, a textura final le o `FoamBuffer` vivo por pixel e aplica agua/tint e foam como sinais separados. Quando `false` com `OceanFoamTextureFromVerticesEnabled=false`, usa somente frames bakeados finais do loop de onda. Padrao `false`.
 - `OceanTransparency` number: transparencia do `MeshPart`; `OceanWaterVertexAlpha` controla o alpha das cores do `EditableMesh`.
 - `OceanReflectance` number: reflexo do MeshPart.
 - `OceanHideSourceParts` boolean: esconde localmente os Parts fonte. Padrao `true`.
@@ -172,10 +172,10 @@ O sistema cria um painel runtime estilo Godot/ImGui quando o cliente inicia.
 - `OceanCpuReadback` boolean: controle reservado no painel runtime para manter paridade visual com o painel Godot.
 - `OceanPanelCameraFOV` number: FOV editado pelo painel.
 - `OceanFoamTextureId` string: override opcional de `ColorMap` por AssetID no caminho por vertice/manual, por exemplo `rbxassetid://123`.
-- `OceanFoamTextureFromVerticesEnabled` boolean: quando `false`, ativa o bake global final em `EditableImage` aplicada por `SurfaceAppearance`, com ondas, agua, tint e foam ja mesclados no mesmo loop. Quando `true`, usa o caminho por cor de vertice/manual, exceto se `OceanRuntimeSurfaceColorEnabled=true`. Padrao `false`.
+- `OceanFoamTextureFromVerticesEnabled` boolean: quando `false`, ativa o bake global final em `EditableImage` aplicada por `SurfaceAppearance`, com ondas, agua/tint e foam como sinais separados no mesmo loop. Quando `true`, usa o caminho por cor de vertice/manual, exceto se `OceanRuntimeSurfaceColorEnabled=true`. Padrao `false`.
 - `OceanFoamTextureResolution` number: resolucao da imagem dinamica de foam. Padrao `64`.
 - `OceanFoamTextureUpdateInterval` number: intervalo de atualizacao da imagem dinamica. Padrao `0.08`.
-- `OceanFoamTextureTransparency` number: transparencia aplicada ao canal de foam antes da mistura final da textura. Padrao `0.72`.
+- `OceanFoamTextureTransparency` number: transparencia aplicada ao foam localizado do `FoamBuffer` antes da textura final. Nao afeta o foam de crista, que usa `OceanCrestFoamAlphaTop`. Padrao `0.5`.
 - `OceanFoamTextureStudsPerTile` number: escala usada apenas pelo fallback procedural por vertices. Padrao `18`.
 - `OceanFoamNoiseSize` number: resolucao logica do pattern procedural usado apenas no fallback por vertices. Padrao `128`.
 - `OceanFoamNoiseSeed` number: seed do pattern procedural usado apenas no fallback por vertices. Padrao `1234`.
@@ -196,7 +196,8 @@ Neste port:
 
 - A agua e o tint agora sao uma funcao so: `ColorBack = Color3.fromRGB(11, 42, 80)`, `ColorTop = Color3.fromRGB(31, 143, 128)`, `Gain = 0.5`. O tamanho bakeado da onda entra normalizado de `0..1`; `0` usa `ColorBack`, `1` usa `ColorTop`, e o ganho puxa os valores intermediarios para a crista.
 - A malha fica com `MeshPart.Transparency = 0.02`; a agua e a espuma usam alpha por vertice/cor via `EditableMesh:AddColor`. Por padrao a agua usa alpha `0.5` e a espuma usa alpha `1`, seguindo o pipeline de cores por face do `EditableMesh`. Quando as cores por vertice estao disponiveis, o `MeshPart.Color` fica branco para nao tingir a espuma.
-- Com `OceanFoamTextureFromVerticesEnabled=false` e `OceanRuntimeSurfaceColorEnabled=false`, o bake global ja sai com ondas, agua base, tint e foam mesclados. Depois do bake, o update da textura apenas escolhe o frame pronto, acessa o buffer RGBA e aplica no `EditableImage`; nao existe sampler/intermediario visual nesse caminho.
+- A cor do foam vem sempre de `OceanFoamColor`; o gradiente verde da agua/tint nao entra na cor da espuma. `OceanFoamTextureTransparency` so reduz foam localizado, enquanto a crista usa `OceanCrestFoamAlphaBack/Top/Gain`.
+- Com `OceanFoamTextureFromVerticesEnabled=false` e `OceanRuntimeSurfaceColorEnabled=false`, o bake global ja sai com ondas, agua/tint e foam separados no RGBA final. Depois do bake, o update da textura apenas escolhe o frame pronto, acessa o buffer RGBA e aplica no `EditableImage`; nao existe sampler/intermediario visual nesse caminho.
 - `OceanFoamTextureId` substitui o `ColorMap` somente no caminho por vertice/manual.
 - `OceanSeaSprayTextureId` ativa particulas de spray usando a textura enviada ao Roblox.
 
