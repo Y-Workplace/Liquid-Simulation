@@ -908,6 +908,7 @@ function WaterSystemClass:_AttachFolder(folder: Instance)
 		"OceanVolumeVerticalSegments",
 		"OceanVolumeBottomResolution",
 		"OceanVolumeWaveScale",
+		"OceanVolumeMinDepth",
 		"OceanChunkLodEnabled",
 		"OceanChunkLod0Distance",
 		"OceanChunkLod1Distance",
@@ -1056,6 +1057,8 @@ function WaterSystemClass:_AttachFolder(folder: Instance)
 	}
 
 	local configOnlyAttributes = {
+		"OceanSurfaceColorBake",
+		"OceanSurfaceColorMode",
 		"OceanRuntimeSurfaceColorEnabled",
 	}
 

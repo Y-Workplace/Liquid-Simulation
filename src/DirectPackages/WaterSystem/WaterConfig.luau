@@ -5,8 +5,10 @@ local WaveSpectrum = require(script.Parent.WaveSpectrum)
 local Types = require(script.Parent.Types)
 local Defaults = require(script.Parent.Defaults)
 local AttributeUtils = require(script.Parent.AttributeUtils)
+local WaterSurfaceColor = require(script.Parent.WaterSurfaceColor)
 
 type WaterSystemOptions = Types.WaterSystemOptions
+type SurfaceColorMode = WaterSurfaceColor.SurfaceColorMode
 
 local DEFAULT_OPTIONS = Defaults.DEFAULT_OPTIONS :: any
 local DEFAULT_CASCADES = Defaults.DEFAULT_CASCADES :: any
@@ -27,6 +29,56 @@ local function resolveRuntimeSurfaceColorEnabled(options: WaterSystemOptions): b
 	end
 
 	return options.OceanRuntimeSurfaceColorEnabled == true
+end
+
+local function resolveSurfaceColorBake(folder: Instance, options: WaterSystemOptions): boolean
+	local value = folder:GetAttribute("OceanSurfaceColorBake")
+
+	if type(value) == "boolean" then
+		return value
+	end
+
+	if options.SurfaceColorBake ~= nil then
+		return options.SurfaceColorBake
+	end
+
+	if options.Bake ~= nil then
+		return options.Bake
+	end
+
+	local runtimeSurfaceColorEnabled = options.RuntimeSurfaceColorEnabled
+
+	if runtimeSurfaceColorEnabled ~= nil then
+		return not runtimeSurfaceColorEnabled
+	end
+
+	if options.OceanRuntimeSurfaceColorEnabled ~= nil then
+		return not options.OceanRuntimeSurfaceColorEnabled
+	end
+
+	return DEFAULT_OPTIONS.SurfaceColorBake
+end
+
+local function resolveSurfaceColorMode(folder: Instance, options: WaterSystemOptions): SurfaceColorMode
+	local value = folder:GetAttribute("OceanSurfaceColorMode")
+
+	if type(value) == "string" then
+		return WaterSurfaceColor.ResolveMode(value)
+	end
+
+	if options.SurfaceColorMode ~= nil then
+		return WaterSurfaceColor.ResolveMode(options.SurfaceColorMode)
+	end
+
+	if options.Mode ~= nil then
+		return WaterSurfaceColor.ResolveMode(options.Mode)
+	end
+
+	if options.FoamTextureFromVerticesEnabled == true then
+		return "PaintVertices"
+	end
+
+	return WaterSurfaceColor.ResolveMode(DEFAULT_OPTIONS.SurfaceColorMode)
 end
 
 local function resolveBooleanOption(value: boolean?, defaultValue: boolean): boolean
@@ -56,6 +108,8 @@ local function resolveConfig(folder: Instance, options: WaterSystemOptions): Oce
 		),
 		0.5
 	)
+	local surfaceColorBake = resolveSurfaceColorBake(folder, options)
+	local surfaceColorMode = resolveSurfaceColorMode(folder, options)
 
 	return {
 		Resolution = math.clamp(
@@ -124,6 +178,14 @@ local function resolveConfig(folder: Instance, options: WaterSystemOptions): Oce
 			),
 			0,
 			1
+		),
+		VolumeMinDepth = math.max(
+			readNumberAttribute(
+				folder,
+				"OceanVolumeMinDepth",
+				options.VolumeMinDepth or DEFAULT_OPTIONS.VolumeMinDepth
+			),
+			0.1
 		),
 		InteractiveWavesEnabled = readBooleanAttribute(
 			folder,
@@ -496,32 +558,58 @@ local function resolveConfig(folder: Instance, options: WaterSystemOptions): Oce
 			1
 		),
 		FoamColor = readColorAttribute(folder, "OceanFoamColor", options.FoamColor or DEFAULT_OPTIONS.FoamColor),
+		SurfaceColorBake = surfaceColorBake,
+		SurfaceColorMode = surfaceColorMode,
 		RuntimeSurfaceColorEnabled = readBooleanAttribute(
 			folder,
 			"OceanRuntimeSurfaceColorEnabled",
 			resolveRuntimeSurfaceColorEnabled(options)
 		),
 		WaterVertexAlpha = math.clamp(
-			readNumberAttribute(folder, "OceanWaterVertexAlpha", options.WaterVertexAlpha or 0.5),
+			readNumberAttribute(
+				folder,
+				"OceanWaterVertexAlpha",
+				options.WaterVertexAlpha or DEFAULT_OPTIONS.WaterVertexAlpha
+			),
 			0,
 			1
 		),
 		FoamVertexAlpha = math.clamp(
-			readNumberAttribute(folder, "OceanFoamVertexAlpha", options.FoamVertexAlpha or 1),
+			readNumberAttribute(
+				folder,
+				"OceanFoamVertexAlpha",
+				options.FoamVertexAlpha or DEFAULT_OPTIONS.FoamVertexAlpha
+			),
 			0,
 			1
 		),
 		FoamVertexBoost = math.max(
-			readNumberAttribute(folder, "OceanFoamVertexBoost", options.FoamVertexBoost or 1.35),
+			readNumberAttribute(
+				folder,
+				"OceanFoamVertexBoost",
+				options.FoamVertexBoost or DEFAULT_OPTIONS.FoamVertexBoost
+			),
 			0
 		),
 		FoamNoiseInfluence = math.clamp(
-			readNumberAttribute(folder, "OceanFoamNoiseInfluence", options.FoamNoiseInfluence or 0.72),
+			readNumberAttribute(
+				folder,
+				"OceanFoamNoiseInfluence",
+				options.FoamNoiseInfluence or DEFAULT_OPTIONS.FoamNoiseInfluence
+			),
 			0,
 			1
 		),
-		Transparency = math.clamp(readNumberAttribute(folder, "OceanTransparency", options.Transparency or 0.28), 0, 1),
-		Reflectance = math.clamp(readNumberAttribute(folder, "OceanReflectance", options.Reflectance or 0.08), 0, 1),
+		Transparency = math.clamp(
+			readNumberAttribute(folder, "OceanTransparency", options.Transparency or DEFAULT_OPTIONS.Transparency),
+			0,
+			1
+		),
+		Reflectance = math.clamp(
+			readNumberAttribute(folder, "OceanReflectance", options.Reflectance or DEFAULT_OPTIONS.Reflectance),
+			0,
+			1
+		),
 		HideSourceParts = readBooleanAttribute(folder, "OceanHideSourceParts", options.HideSourceParts ~= false),
 		FoamColorUpdateInterval = math.max(readNumberAttribute(folder, "OceanFoamColorUpdateInterval", 0.12), 0),
 		FoamTextureId = readStringAttribute(folder, "OceanFoamTextureId", options.FoamTextureId or ""),

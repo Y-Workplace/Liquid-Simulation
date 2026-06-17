@@ -2,9 +2,31 @@
 
 local OceanTile = require(script.Parent.OceanTile)
 local RuntimePanel = require(script.Parent.RuntimePanel)
+local WaterSurfaceColor = require(script.Parent.WaterSurfaceColor)
 local WaveSpectrum = require(script.Parent.WaveSpectrum)
 
+export type WaterSystemContextOptions = { [string]: any }
+
 export type WaterSystemOptions = {
+	Source: WaterSystemContextOptions?,
+	Mesh: WaterSystemContextOptions?,
+	Streaming: WaterSystemContextOptions?,
+	Spatial: WaterSystemContextOptions?,
+	Lod: WaterSystemContextOptions?,
+	Volume: WaterSystemContextOptions?,
+	ChunkLod: WaterSystemContextOptions?,
+	ViewCulling: WaterSystemContextOptions?,
+	Interactive: WaterSystemContextOptions?,
+	Depth: WaterSystemContextOptions?,
+	Waves: WaterSystemContextOptions?,
+	Obstacle: WaterSystemContextOptions?,
+	Foam: WaterSystemContextOptions?,
+	Surface: WaterSystemContextOptions?,
+	Particles: WaterSystemContextOptions?,
+	Physics: WaterSystemContextOptions?,
+	Player: WaterSystemContextOptions?,
+	Underwater: WaterSystemContextOptions?,
+	Camera: WaterSystemContextOptions?,
 	SourceFolderName: string?,
 	GeneratedFolderName: string?,
 	Resolution: number?,
@@ -32,6 +54,7 @@ export type WaterSystemOptions = {
 	VolumeVerticalSegments: number?,
 	VolumeBottomResolution: number?,
 	VolumeWaveScale: number?,
+	VolumeMinDepth: number?,
 	ChunkLodEnabled: boolean?,
 	ChunkLod0Distance: number?,
 	ChunkLod1Distance: number?,
@@ -133,6 +156,10 @@ export type WaterSystemOptions = {
 	WaterColorTop: Color3?,
 	WaterColorGain: number?,
 	FoamColor: Color3?,
+	Bake: boolean?,
+	Mode: WaterSurfaceColor.SurfaceColorMode?,
+	SurfaceColorBake: boolean?,
+	SurfaceColorMode: WaterSurfaceColor.SurfaceColorMode?,
 	RuntimeSurfaceColorEnabled: boolean?,
 	OceanRuntimeSurfaceColorEnabled: boolean?,
 	WaterVertexAlpha: number?,

@@ -146,6 +146,7 @@ function UnderwaterEffectsController.step(self: any, deltaTime: number)
 
 	if waterHeight == nil or not cameraInVolume then
 		if self._WasUnderwater then
+			UnderwaterEffectsController.spawnCameraDrops(self, camera)
 			self._UnderwaterDepth = 0
 			self._WasUnderwater = false
 			local existingCorrection = Lighting:FindFirstChild("WaterUnderwaterColor")
@@ -183,7 +184,7 @@ function UnderwaterEffectsController.step(self: any, deltaTime: number)
 	local depth = waterHeight - cameraPosition.Y
 	local isUnderwater = enabled and depth > 0
 
-	if isUnderwater ~= self._WasUnderwater then
+	if self._WasUnderwater and not isUnderwater then
 		UnderwaterEffectsController.spawnCameraDrops(self, camera)
 	end
 

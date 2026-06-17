@@ -5,6 +5,7 @@ local AssetService = game:GetService("AssetService")
 local WaterDepthMap = require(script.Parent.WaterDepthMap)
 local WaterObstacleMap = require(script.Parent.WaterObstacleMap)
 local WaterBuffer = require(script.Parent.WaterBuffer)
+local WaterSurfaceColor = require(script.Parent.WaterSurfaceColor)
 local WaveSpectrum = require(script.Parent.WaveSpectrum)
 
 export type TileConfig = {
@@ -23,6 +24,7 @@ export type TileConfig = {
 	VolumeVerticalSegments: number,
 	VolumeBottomResolution: number,
 	VolumeWaveScale: number,
+	VolumeMinDepth: number,
 	InteractiveWavesEnabled: boolean,
 	InteractiveResolution: number,
 	InteractiveSimulationIterations: number,
@@ -74,6 +76,8 @@ export type TileConfig = {
 	WaterColorTop: Color3,
 	WaterColorGain: number,
 	FoamColor: Color3,
+	SurfaceColorBake: boolean,
+	SurfaceColorMode: WaterSurfaceColor.SurfaceColorMode,
 	RuntimeSurfaceColorEnabled: boolean,
 	WaterVertexAlpha: number,
 	FoamVertexAlpha: number,
@@ -178,6 +182,28 @@ type InternalOceanTile = OceanTile & {
 	_WaveLoopDuration: number,
 	_WaveLoopKey: string,
 	_WaveLoopBaking: boolean,
+	_WaveLoopMinHeight: number,
+	_WaveLoopMaxHeight: number,
+	_SurfaceColorIds: { number },
+	_SurfaceUVIds: { number },
+	_SurfaceImage: EditableImage?,
+	_SurfaceImageResolution: number,
+	_SurfaceAppearance: SurfaceAppearance?,
+	_SurfaceTextureLastUpdateTime: number,
+	_SurfaceTextureLastFrameIndex: number,
+	_SurfaceTextureFramePixels: buffer?,
+	_SurfaceTextureFrameCount: number,
+	_SurfaceTextureFrameResolution: number,
+	_SurfaceTextureRuntimePixels: buffer?,
+	_SurfaceVertexFrameColors: buffer?,
+	_SurfaceVertexFrameCount: number,
+	_SurfaceVertexLastFrameIndex: number,
+	_SurfaceBakeKey: string,
+	_SurfaceBakeBaking: boolean,
+	_SurfaceColorSupported: boolean,
+	_SurfaceUVSupported: boolean,
+	_SurfaceAppearanceSupported: boolean,
+	_SurfaceColorWarningShown: boolean,
 	_ObstacleImpactVertices: buffer?,
 	_ObstacleImpactVertexCount: number,
 	_LastObstacleSplashTime: number,
@@ -191,6 +217,8 @@ local WAVE_BAKE_VERSION = 21
 local WAVE_LOOP_POSITION_STRIDE = 3
 local WAVE_LOOP_POSITION_BYTES = WAVE_LOOP_POSITION_STRIDE * 4
 local WAVE_LOOP_HEIGHT_BYTES = 4
+local SURFACE_IMAGE_PIXEL_BYTES = 4
+local SURFACE_VERTEX_COLOR_BYTES = 4
 local WAVE_LOOP_SEAM_FRACTION = 0.18
 local BAKE_YIELD_CELL_BUDGET = 4096
 local MAX_OBSTACLE_IMPACT_VERTICES = 32
@@ -213,10 +241,36 @@ local VERTEX_STATIC_LAKE_WEIGHT = 4
 local VERTEX_STATIC_SHALLOW_WEIGHT = 5
 
 local ensureWaveLoop: (InternalOceanTile) -> ()
+local sampleShoreFoamAlpha: (InternalOceanTile, number, number) -> number = function(_tile, _localX, _localZ)
+	return 0
+end
+local composeSurfaceSample: (
+	InternalOceanTile,
+	WaterSurfaceColor.SurfaceSample,
+	number,
+	number,
+	number
+) -> (Color3, number) = function(_tile, sample, _depthAlpha, _localX, _localZ)
+	return sample.FinalColor, sample.FinalAlpha
+end
 
 local function smoothstep(edge0: number, edge1: number, x: number): number
 	local t = math.clamp((x - edge0) / math.max(edge1 - edge0, 1e-6), 0, 1)
 	return t * t * (3 - 2 * t)
+end
+
+local function lerpNumber(a: number, b: number, t: number): number
+	return a + (b - a) * t
+end
+
+local function lerpColor(a: Color3, b: Color3, t: number): Color3
+	return Color3.new(lerpNumber(a.R, b.R, t), lerpNumber(a.G, b.G, t), lerpNumber(a.B, b.B, t))
+end
+
+local function hashNoise(x: number, z: number, seed: number): number
+	local value = math.sin((x + seed * 13.17) * 12.9898 + (z - seed * 7.31) * 78.233) * 43758.5453123
+
+	return value - math.floor(value)
 end
 
 local function cframeWithUp(position: Vector3, upVector: Vector3): CFrame
@@ -734,6 +788,381 @@ local function trySetVertexPosition(tile: InternalOceanTile, vertexId: number, p
 	return true
 end
 
+local function warnSurfaceColorUnsupported(tile: InternalOceanTile, err: any)
+	if tile._SurfaceColorWarningShown then
+		return
+	end
+
+	tile._SurfaceColorWarningShown = true
+	warn("[WaterSystem] Surface color resource unavailable; falling back where possible: " .. tostring(err))
+end
+
+local function usesSurfaceAppearanceTexture(config: TileConfig): boolean
+	return config.SurfaceColorMode == "SurfaceAppearance" or config.SurfaceColorMode == "FoamSurfaceAppearance"
+end
+
+local function usesRenderSurfaceAppearance(config: TileConfig): boolean
+	return usesSurfaceAppearanceTexture(config) or config.SurfaceColorMode == "PaintVertices"
+end
+
+local function usesPaintVertices(config: TileConfig): boolean
+	return config.SurfaceColorMode == "PaintVertices" or config.SurfaceColorMode == "FoamSurfaceAppearance"
+end
+
+local function shouldUseWhiteMeshColor(config: TileConfig, hasVertexColors: boolean, hasSurfaceAppearance: boolean): boolean
+	if config.SurfaceColorMode == "SurfaceAppearance" then
+		return hasSurfaceAppearance
+	end
+
+	return hasVertexColors
+end
+
+local function getSurfaceImageResolution(config: TileConfig): number
+	return math.clamp(math.round(config.FoamTextureResolution), 16, 1024)
+end
+
+local function addSurfaceColor(tile: InternalOceanTile, color: Color3, alpha: number): number?
+	local editableMesh: any = tile.EditableMesh
+	local ok, colorId = pcall(function()
+		return editableMesh:AddColor(color, alpha)
+	end)
+
+	if not ok or type(colorId) ~= "number" then
+		tile._SurfaceColorSupported = false
+		warnSurfaceColorUnsupported(tile, colorId)
+		return nil
+	end
+
+	return colorId
+end
+
+local function addSurfaceUV(tile: InternalOceanTile, uv: Vector2): number?
+	local editableMesh: any = tile.EditableMesh
+	local ok, uvId = pcall(function()
+		return editableMesh:AddUV(uv)
+	end)
+
+	if not ok or type(uvId) ~= "number" then
+		tile._SurfaceUVSupported = false
+		warnSurfaceColorUnsupported(tile, uvId)
+		return nil
+	end
+
+	return uvId
+end
+
+local function trySetSurfaceFaceColors(tile: InternalOceanTile, face: FaceState): boolean
+	local colorA = tile._SurfaceColorIds[face.a]
+	local colorB = tile._SurfaceColorIds[face.b]
+	local colorC = tile._SurfaceColorIds[face.c]
+
+	if colorA == nil or colorB == nil or colorC == nil then
+		return false
+	end
+
+	local editableMesh: any = tile.EditableMesh
+	local ok, err = pcall(function()
+		editableMesh:SetFaceColors(face.id, { colorA, colorB, colorC })
+	end)
+
+	if not ok then
+		tile._SurfaceColorSupported = false
+		warnSurfaceColorUnsupported(tile, err)
+		return false
+	end
+
+	return true
+end
+
+local function trySetSurfaceFaceUVs(tile: InternalOceanTile, face: FaceState): boolean
+	local uvA = tile._SurfaceUVIds[face.a]
+	local uvB = tile._SurfaceUVIds[face.b]
+	local uvC = tile._SurfaceUVIds[face.c]
+
+	if uvA == nil or uvB == nil or uvC == nil then
+		return false
+	end
+
+	local editableMesh: any = tile.EditableMesh
+	local ok, err = pcall(function()
+		editableMesh:SetFaceUVs(face.id, { uvA, uvB, uvC })
+	end)
+
+	if not ok then
+		tile._SurfaceUVSupported = false
+		warnSurfaceColorUnsupported(tile, err)
+		return false
+	end
+
+	return true
+end
+
+local function trySetSurfaceColor(tile: InternalOceanTile, colorId: number, color: Color3, alpha: number): boolean
+	local editableMesh: any = tile.EditableMesh
+	local ok, err = pcall(function()
+		editableMesh:SetColor(colorId, color)
+		editableMesh:SetColorAlpha(colorId, alpha)
+	end)
+
+	if ok then
+		return true
+	end
+
+	local fallbackOk, fallbackErr = pcall(function()
+		editableMesh:SetColor(colorId, color, alpha)
+	end)
+
+	if not fallbackOk then
+		tile._SurfaceColorSupported = false
+		warnSurfaceColorUnsupported(tile, fallbackErr or err)
+		return false
+	end
+
+	return true
+end
+
+local function destroySurfaceAppearance(tile: InternalOceanTile)
+	if tile._SurfaceAppearance ~= nil then
+		tile._SurfaceAppearance:Destroy()
+		tile._SurfaceAppearance = nil
+	end
+
+	if tile._SurfaceImage ~= nil then
+		pcall(function()
+			tile._SurfaceImage:Destroy()
+		end)
+		tile._SurfaceImage = nil
+	end
+
+	tile._SurfaceImageResolution = 0
+	tile._SurfaceTextureLastUpdateTime = -math.huge
+	tile._SurfaceTextureLastFrameIndex = -1
+	tile._SurfaceTextureRuntimePixels = nil
+end
+
+local function resetSurfaceBake(tile: InternalOceanTile)
+	tile._SurfaceTextureFramePixels = nil
+	tile._SurfaceTextureFrameCount = 0
+	tile._SurfaceTextureFrameResolution = 0
+	tile._SurfaceTextureRuntimePixels = nil
+	tile._SurfaceTextureLastFrameIndex = -1
+	tile._SurfaceVertexFrameColors = nil
+	tile._SurfaceVertexFrameCount = 0
+	tile._SurfaceVertexLastFrameIndex = -1
+	tile._SurfaceBakeKey = ""
+	tile._SurfaceBakeBaking = false
+end
+
+local function ensureSurfaceUVs(tile: InternalOceanTile): boolean
+	if not tile._SurfaceUVSupported then
+		return false
+	end
+
+	if #tile._SurfaceUVIds == #tile._Vertices then
+		return true
+	end
+
+	table.clear(tile._SurfaceUVIds)
+
+	local sizeX = math.max(tile.SourcePart.Size.X, 0.001)
+	local sizeZ = math.max(tile.SourcePart.Size.Z, 0.001)
+
+	for vertexIndex, vertex in ipairs(tile._Vertices) do
+		local u = math.clamp(vertex.baseLocal.X / sizeX + 0.5, 0, 1)
+		local v = math.clamp(0.5 - vertex.baseLocal.Z / sizeZ, 0, 1)
+		local uvId = addSurfaceUV(tile, Vector2.new(u, v))
+
+		if uvId == nil then
+			return false
+		end
+
+		tile._SurfaceUVIds[vertexIndex] = uvId
+	end
+
+	for _, face in ipairs(tile._Faces) do
+		if not trySetSurfaceFaceUVs(tile, face) then
+			return false
+		end
+	end
+
+	return true
+end
+
+local function ensureSurfaceAppearance(tile: InternalOceanTile): boolean
+	if not usesRenderSurfaceAppearance(tile._Config) then
+		destroySurfaceAppearance(tile)
+		return false
+	end
+
+	if not usesSurfaceAppearanceTexture(tile._Config) then
+		if tile._SurfaceAppearance ~= nil and tile._SurfaceImage == nil then
+			return true
+		end
+
+		destroySurfaceAppearance(tile)
+
+		local ok, surfaceOrError = pcall(function()
+			return Instance.new("SurfaceAppearance")
+		end)
+
+		if not ok or surfaceOrError == nil then
+			warnSurfaceColorUnsupported(tile, surfaceOrError)
+			return false
+		end
+
+		local surface = surfaceOrError :: SurfaceAppearance
+
+		pcall(function()
+			surface.AlphaMode = Enum.AlphaMode.Transparency
+		end)
+
+		surface.Name = "WaterSurfacePipeline"
+		surface.Parent = tile.MeshPart
+		tile._SurfaceAppearance = surface
+		tile._SurfaceImage = nil
+		tile._SurfaceImageResolution = 0
+		tile._SurfaceTextureLastUpdateTime = -math.huge
+
+		return true
+	end
+
+	if not tile._SurfaceAppearanceSupported then
+		return false
+	end
+
+	local resolution = getSurfaceImageResolution(tile._Config)
+
+	if
+		tile._SurfaceAppearance ~= nil
+		and tile._SurfaceImage ~= nil
+		and tile._SurfaceImageResolution == resolution
+	then
+		return true
+	end
+
+	destroySurfaceAppearance(tile)
+
+	local ok, imageOrError = pcall(function()
+		return AssetService:CreateEditableImage({
+			Size = Vector2.new(resolution, resolution),
+		})
+	end)
+
+	if not ok or imageOrError == nil then
+		tile._SurfaceAppearanceSupported = false
+		warnSurfaceColorUnsupported(tile, imageOrError)
+		return false
+	end
+
+	local image = imageOrError :: EditableImage
+	local surfaceOk, surfaceOrError = pcall(function()
+		return AssetService:CreateSurfaceAppearanceAsync({
+			ColorMap = Content.fromObject(image),
+		})
+	end)
+
+	if not surfaceOk or surfaceOrError == nil then
+		tile._SurfaceAppearanceSupported = false
+		pcall(function()
+			image:Destroy()
+		end)
+		warnSurfaceColorUnsupported(tile, surfaceOrError)
+		return false
+	end
+
+	local surface = surfaceOrError :: SurfaceAppearance
+	pcall(function()
+		surface.AlphaMode = Enum.AlphaMode.Transparency
+	end)
+
+	surface.Name = "WaterSurfaceColor"
+	surface.Parent = tile.MeshPart
+	tile._SurfaceImage = image
+	tile._SurfaceImageResolution = resolution
+	tile._SurfaceAppearance = surface
+	tile._SurfaceTextureLastUpdateTime = -math.huge
+
+	return true
+end
+
+local function createSurfaceColorConfig(config: TileConfig): WaterSurfaceColor.SurfaceColorConfig
+	return WaterSurfaceColor.BuildConfig({
+		SurfaceColorBake = config.SurfaceColorBake,
+		SurfaceColorMode = config.SurfaceColorMode,
+		WaterColorBack = config.WaterColorBack,
+		WaterColorTop = config.WaterColorTop,
+		WaterColorGain = config.WaterColorGain,
+		WaterVertexAlpha = config.WaterVertexAlpha,
+		FoamColor = config.FoamColor,
+		CrestFoamAlphaBack = config.CrestFoamAlphaBack,
+		CrestFoamAlphaTop = config.CrestFoamAlphaTop,
+		CrestFoamAlphaGain = config.CrestFoamAlphaGain,
+	})
+end
+
+local function ensureSurfaceVertexColors(tile: InternalOceanTile): boolean
+	if not tile._SurfaceColorSupported then
+		return false
+	end
+
+	if #tile._SurfaceColorIds == #tile._Vertices then
+		return true
+	end
+
+	table.clear(tile._SurfaceColorIds)
+
+	for vertexIndex = 1, #tile._Vertices do
+		local colorId = addSurfaceColor(tile, tile._Config.WaterColorBack, 0)
+
+		if colorId == nil then
+			return false
+		end
+
+		tile._SurfaceColorIds[vertexIndex] = colorId
+	end
+
+	for _, face in ipairs(tile._Faces) do
+		if not trySetSurfaceFaceColors(tile, face) then
+			return false
+		end
+	end
+
+	return true
+end
+
+local function paintSurfaceVertex(
+	tile: InternalOceanTile,
+	surfaceColorConfig: WaterSurfaceColor.SurfaceColorConfig,
+	vertexIndex: number,
+	height: number,
+	includeFoam: boolean,
+	depthAlpha: number,
+	localX: number,
+	localZ: number
+)
+	if not tile._SurfaceColorSupported then
+		return
+	end
+
+	local colorId = tile._SurfaceColorIds[vertexIndex]
+
+	if colorId == nil then
+		return
+	end
+
+	local normalizedHeight = WaterSurfaceColor.NormalizeHeight(height, tile._WaveLoopMinHeight, tile._WaveLoopMaxHeight)
+	if includeFoam then
+		local shoreFoamAlpha = sampleShoreFoamAlpha(tile, localX, localZ)
+		local fullSample = WaterSurfaceColor.Sample(surfaceColorConfig, normalizedHeight, shoreFoamAlpha, depthAlpha)
+		local finalColor, finalAlpha = composeSurfaceSample(tile, fullSample, depthAlpha, localX, localZ)
+
+		trySetSurfaceColor(tile, colorId, finalColor, finalAlpha)
+	else
+		local waterSample = WaterSurfaceColor.SampleWater(surfaceColorConfig, normalizedHeight, depthAlpha)
+		trySetSurfaceColor(tile, colorId, waterSample.Color, waterSample.Alpha)
+	end
+end
+
 local function buildSurfaceMesh(tile: InternalOceanTile)
 	local resolutionX = tile._ResolutionX
 	local resolutionZ = tile._ResolutionZ
@@ -761,6 +1190,19 @@ local function buildSurfaceMesh(tile: InternalOceanTile)
 	end
 end
 
+local function getVolumeDepth(tile: InternalOceanTile, localX: number, localZ: number): number
+	local sourceDepth = math.max(tile.SourcePart.Size.Y, 0.1)
+	local minDepth = math.max(tile._Config.VolumeMinDepth, sourceDepth)
+	local maxDepth = math.max(tile._Config.OceanDepth, minDepth)
+	local depth = sourceDepth
+
+	if tile._DepthMap ~= nil then
+		depth = tile._DepthMap:SampleDepth(localX, localZ)
+	end
+
+	return math.clamp(math.max(depth, minDepth), minDepth, maxDepth)
+end
+
 local function buildSideStrip(
 	tile: InternalOceanTile,
 	edgeCount: number,
@@ -769,7 +1211,6 @@ local function buildSideStrip(
 	reverseWinding: boolean
 )
 	local verticalSegments = math.clamp(math.round(tile._Config.VolumeVerticalSegments), 1, 8)
-	local depth = math.max(tile.SourcePart.Size.Y, 0.1)
 	local stripSegments = edgeCount - 1
 	local stripCount = stripSegments + 1
 	local topIndices = table.create(stripCount)
@@ -794,6 +1235,7 @@ local function buildSideStrip(
 			local topVertex = tile._Vertices[topAt(sourceIndex)]
 			local gridX, gridZ = gridAt(sourceIndex)
 			local base = topVertex.baseLocal
+			local depth = getVolumeDepth(tile, base.X, base.Z)
 
 			row[stripIndex + 1] = addMeshVertex(
 				tile,
@@ -831,7 +1273,6 @@ end
 
 local function buildBottomMesh(tile: InternalOceanTile)
 	local resolution = math.clamp(math.round(tile._Config.VolumeBottomResolution), 1, 24)
-	local depth = math.max(tile.SourcePart.Size.Y, 0.1)
 	local halfSize = tile.SourcePart.Size * 0.5
 	local rows = table.create(resolution + 1)
 
@@ -849,6 +1290,7 @@ local function buildBottomMesh(tile: InternalOceanTile)
 			)
 			local edgeBlend = math.clamp(edgeDistance / math.max(math.min(halfSize.X, halfSize.Z), 1), 0, 1)
 			local waveInfluence = tile._Config.VolumeWaveScale * (0.12 + edgeBlend * 0.04)
+			local depth = getVolumeDepth(tile, localX, localZ)
 
 			row[x + 1] = addMeshVertex(
 				tile,
@@ -876,6 +1318,66 @@ local function buildBottomMesh(tile: InternalOceanTile)
 	end
 end
 
+local function candidateCoversEdgeSample(candidate: BasePart, worldPosition: Vector3, surfaceY: number, tolerance: number): boolean
+	local candidateBaseCFrame = getBaseCFrame(candidate)
+
+	if math.abs(candidateBaseCFrame.Position.Y - surfaceY) > math.max(tolerance * 2, 0.5) then
+		return false
+	end
+
+	local localPosition = candidateBaseCFrame:PointToObjectSpace(worldPosition)
+	local halfSize = candidate.Size * 0.5
+
+	return math.abs(localPosition.X) <= halfSize.X + tolerance
+		and math.abs(localPosition.Z) <= halfSize.Z + tolerance
+end
+
+local function hasAdjacentWaterOnEdge(
+	tile: InternalOceanTile,
+	edgeCenter: Vector3,
+	edgeAxis: Vector3,
+	edgeNormal: Vector3,
+	edgeLength: number
+): boolean
+	local sourcePart = tile.SourcePart
+	local oceanParent = sourcePart.Parent
+
+	if oceanParent == nil then
+		return false
+	end
+
+	local tolerance = math.max(tile._Config.VertexSpacing * 0.35, 0.08)
+	local probeDistance = math.max(tolerance, 0.05)
+	local surfaceY = tile.BaseCFrame.Position.Y
+	local coveredSamples = 0
+	local sampleOffsets = { -0.375, 0, 0.375 }
+
+	for _, sampleOffset in ipairs(sampleOffsets) do
+		local localSample = edgeCenter + edgeAxis * (edgeLength * sampleOffset)
+		local worldSample = tile.BaseCFrame:PointToWorldSpace(localSample + edgeNormal * probeDistance)
+		local sampleCovered = false
+
+		for _, descendant in ipairs(oceanParent:GetDescendants()) do
+			if descendant == sourcePart or not descendant:IsA("BasePart") then
+				continue
+			end
+
+			if candidateCoversEdgeSample(descendant, worldSample, surfaceY, tolerance) then
+				sampleCovered = true
+				break
+			end
+		end
+
+		if not sampleCovered then
+			return false
+		end
+
+		coveredSamples += 1
+	end
+
+	return coveredSamples == #sampleOffsets
+end
+
 local function buildVolumeMesh(tile: InternalOceanTile)
 	if not tile._Config.VolumeEnabled then
 		return
@@ -883,30 +1385,67 @@ local function buildVolumeMesh(tile: InternalOceanTile)
 
 	local resolutionX = tile._ResolutionX
 	local resolutionZ = tile._ResolutionZ
+	local halfSize = tile.SourcePart.Size * 0.5
+	local skipNegativeZ = hasAdjacentWaterOnEdge(
+		tile,
+		Vector3.new(0, 0, -halfSize.Z),
+		Vector3.xAxis,
+		Vector3.new(0, 0, -1),
+		tile.SourcePart.Size.X
+	)
+	local skipPositiveZ = hasAdjacentWaterOnEdge(
+		tile,
+		Vector3.new(0, 0, halfSize.Z),
+		Vector3.xAxis,
+		Vector3.zAxis,
+		tile.SourcePart.Size.X
+	)
+	local skipNegativeX = hasAdjacentWaterOnEdge(
+		tile,
+		Vector3.new(-halfSize.X, 0, 0),
+		Vector3.zAxis,
+		Vector3.new(-1, 0, 0),
+		tile.SourcePart.Size.Z
+	)
+	local skipPositiveX = hasAdjacentWaterOnEdge(
+		tile,
+		Vector3.new(halfSize.X, 0, 0),
+		Vector3.zAxis,
+		Vector3.xAxis,
+		tile.SourcePart.Size.Z
+	)
 
-	buildSideStrip(tile, resolutionX + 1, function(index)
-		return gridIndex(resolutionX, index, 0)
-	end, function(index)
-		return index, 0
-	end, true)
+	if not skipNegativeZ then
+		buildSideStrip(tile, resolutionX + 1, function(index)
+			return gridIndex(resolutionX, index, 0)
+		end, function(index)
+			return index, 0
+		end, true)
+	end
 
-	buildSideStrip(tile, resolutionX + 1, function(index)
-		return gridIndex(resolutionX, index, resolutionZ)
-	end, function(index)
-		return index, resolutionZ
-	end, false)
+	if not skipPositiveZ then
+		buildSideStrip(tile, resolutionX + 1, function(index)
+			return gridIndex(resolutionX, index, resolutionZ)
+		end, function(index)
+			return index, resolutionZ
+		end, false)
+	end
 
-	buildSideStrip(tile, resolutionZ + 1, function(index)
-		return gridIndex(resolutionX, 0, index)
-	end, function(index)
-		return 0, index
-	end, false)
+	if not skipNegativeX then
+		buildSideStrip(tile, resolutionZ + 1, function(index)
+			return gridIndex(resolutionX, 0, index)
+		end, function(index)
+			return 0, index
+		end, false)
+	end
 
-	buildSideStrip(tile, resolutionZ + 1, function(index)
-		return gridIndex(resolutionX, resolutionX, index)
-	end, function(index)
-		return resolutionX, index
-	end, true)
+	if not skipPositiveX then
+		buildSideStrip(tile, resolutionZ + 1, function(index)
+			return gridIndex(resolutionX, resolutionX, index)
+		end, function(index)
+			return resolutionX, index
+		end, true)
+	end
 
 	buildBottomMesh(tile)
 end
@@ -939,20 +1478,11 @@ local function getLodDetail(config: TileConfig, distance: number): number
 	return math.clamp(fade * math.clamp(config.FarWaveDetail, 0.05, 1), 0, 1)
 end
 
-local function shouldUpdateLodVertex(tile: InternalOceanTile, vertex: VertexState, step: number): boolean
-	if step <= 1 then
-		return true
-	end
-
-	if vertex.gridX == 0 or vertex.gridX == tile._ResolutionX then
-		return true
-	end
-
-	if vertex.gridZ == 0 or vertex.gridZ == tile._ResolutionZ then
-		return true
-	end
-
-	return vertex.gridX % step == 0 and vertex.gridZ % step == 0
+local function shouldUpdateLodVertex(_tile: InternalOceanTile, _vertex: VertexState, _step: number): boolean
+	-- The rings still reduce wave detail, but every vertex must receive a fresh
+	-- position. Skipping alternating vertices inside one mesh leaves stale peaks
+	-- beside updated vertices, which creates jagged LOD borders.
+	return true
 end
 
 local function ringLodEntryOffset(entryIndex: number): number
@@ -1098,6 +1628,88 @@ local function sampleDepth(depthMap: WaterDepthMap.WaterDepthMap?, config: TileC
 	return depthMap:SampleDepth(localX, localZ)
 end
 
+local function sampleWaterDepthAlpha(tile: InternalOceanTile, localX: number, localZ: number): number
+	local config = tile._Config
+	local oceanDepth = math.max(config.OceanDepth, math.max(config.LakeDepth, config.ShallowDepth + 0.001) + 0.001)
+	local depth = sampleDepth(tile._DepthMap, config, localX, localZ)
+
+	return smoothstep(config.ShallowDepth, oceanDepth, depth)
+end
+
+sampleShoreFoamAlpha = function(tile: InternalOceanTile, localX: number, localZ: number): number
+	local config = tile._Config
+
+	if tile._DepthMap == nil or config.ShoreFoamStrength <= 0 then
+		return 0
+	end
+
+	local depth = sampleDepth(tile._DepthMap, config, localX, localZ)
+	local shallowBand = math.max(config.ShallowDepth, 0.001)
+	local shoreFactor = 1 - smoothstep(shallowBand * 0.2, shallowBand, depth)
+
+	return math.clamp(shoreFactor * config.ShoreFoamStrength, 0, 1)
+end
+
+local function sampleFoamBreakup(tile: InternalOceanTile, localX: number, localZ: number): number
+	local config = tile._Config
+	local influence = math.clamp(config.FoamNoiseInfluence, 0, 1)
+
+	if influence <= 0 then
+		return 1
+	end
+
+	local maxSize = math.max(tile.SourcePart.Size.X, tile.SourcePart.Size.Z, 1)
+	local noiseCellSize = math.max(maxSize / math.max(config.FoamNoiseSize, 1), 1)
+	local scale = math.max(math.min(config.FoamTextureStudsPerTile, noiseCellSize), 0.5)
+	local sampleX = localX / scale
+	local sampleZ = localZ / scale
+	local x0 = math.floor(sampleX)
+	local z0 = math.floor(sampleZ)
+	local tx = smoothstep(0, 1, sampleX - x0)
+	local tz = smoothstep(0, 1, sampleZ - z0)
+	local seed = config.FoamNoiseSeed
+	local n00 = hashNoise(x0, z0, seed)
+	local n10 = hashNoise(x0 + 1, z0, seed)
+	local n01 = hashNoise(x0, z0 + 1, seed)
+	local n11 = hashNoise(x0 + 1, z0 + 1, seed)
+	local nx0 = lerpNumber(n00, n10, tx)
+	local nx1 = lerpNumber(n01, n11, tx)
+	local noise = lerpNumber(nx0, nx1, tz)
+	local mask = 0.55 + noise * 0.45
+
+	return lerpNumber(1, mask, influence)
+end
+
+local function resolveFoamAlpha(
+	tile: InternalOceanTile,
+	foamAlpha: number,
+	depthAlpha: number,
+	localX: number,
+	localZ: number
+): number
+	if foamAlpha <= 0 then
+		return 0
+	end
+
+	local shallowFade = lerpNumber(0.18, 1, math.clamp(depthAlpha, 0, 1))
+
+	return math.clamp(foamAlpha * shallowFade * sampleFoamBreakup(tile, localX, localZ), 0, 1)
+end
+
+composeSurfaceSample = function(
+	tile: InternalOceanTile,
+	sample: WaterSurfaceColor.SurfaceSample,
+	depthAlpha: number,
+	localX: number,
+	localZ: number
+): (Color3, number)
+	local foamAlpha = resolveFoamAlpha(tile, sample.FoamAlpha, depthAlpha, localX, localZ)
+	local finalColor = lerpColor(sample.WaterColor, sample.FoamColor, foamAlpha)
+	local finalAlpha = math.clamp(sample.WaterAlpha + (1 - sample.WaterAlpha) * foamAlpha, 0, 1)
+
+	return finalColor, finalAlpha
+end
+
 local function sampleObstacleImpact(obstacleMap: WaterObstacleMap.WaterObstacleMap?, localX: number, localZ: number): number
 	if obstacleMap == nil then
 		return 0
@@ -1139,6 +1751,8 @@ local function bakeWaveLoop(tile: InternalOceanTile)
 	local obstacleVertices = buffer.create(MAX_OBSTACLE_IMPACT_VERTICES * OBSTACLE_IMPACT_VERTEX_BYTES)
 	local obstacleVertexCount = 0
 	local processedSinceYield = 0
+	local minHeight = math.huge
+	local maxHeight = -math.huge
 	local lakeDepth = math.max(config.LakeDepth, config.ShallowDepth + 0.001)
 	local oceanDepth = math.max(config.OceanDepth, lakeDepth + 0.001)
 
@@ -1211,6 +1825,8 @@ local function bakeWaveLoop(tile: InternalOceanTile)
 			buffer.writef32(positions, positionOffset + 4, delta.Y)
 			buffer.writef32(positions, positionOffset + 8, delta.Z)
 			buffer.writef32(heights, waveHeightOffset(frameIndex, vertexIndex, vertexCount), delta.Y)
+			minHeight = math.min(minHeight, delta.Y)
+			maxHeight = math.max(maxHeight, delta.Y)
 
 			processedSinceYield += 1
 
@@ -1226,6 +1842,8 @@ local function bakeWaveLoop(tile: InternalOceanTile)
 	tile._WaveLoopFrames = frames
 	tile._WaveLoopFrameStride = vertexCount
 	tile._WaveLoopDuration = duration
+	tile._WaveLoopMinHeight = if minHeight < math.huge then minHeight else 0
+	tile._WaveLoopMaxHeight = if maxHeight > -math.huge then maxHeight else 0
 	tile._ObstacleImpactVertices = obstacleVertices
 	tile._ObstacleImpactVertexCount = obstacleVertexCount
 	tile._WaveLoopKey = getWaveLoopKey(config)
@@ -1330,6 +1948,15 @@ local function readWaveLoopHeight(
 	return valueA + (buffer.readf32(heights, waveHeightOffset(frameB, vertexIndex, vertexCount)) - valueA) * alpha
 end
 
+local function readWaveLoopHeightFrame(
+	heights: buffer,
+	frameIndex: number,
+	vertexCount: number,
+	vertexIndex: number
+): number
+	return buffer.readf32(heights, waveHeightOffset(frameIndex, vertexIndex, vertexCount))
+end
+
 local function sampleBakedHeight(tile: InternalOceanTile, localX: number, localZ: number, time: number): number
 	ensureWaveLoop(tile)
 
@@ -1353,6 +1980,436 @@ local function sampleBakedHeight(tile: InternalOceanTile, localX: number, localZ
 	local b = d01 + (d11 - d01) * tx
 
 	return a + (b - a) * tz
+end
+
+local function surfaceImagePixelOffset(resolution: number, x: number, y: number): number
+	return (y * resolution + x) * SURFACE_IMAGE_PIXEL_BYTES
+end
+
+local function surfaceTextureFrameOffset(frameIndex: number, resolution: number): number
+	return frameIndex * resolution * resolution * SURFACE_IMAGE_PIXEL_BYTES
+end
+
+local function surfaceVertexColorOffset(frameIndex: number, vertexIndex: number, vertexCount: number): number
+	return (frameIndex * vertexCount + (vertexIndex - 1)) * SURFACE_VERTEX_COLOR_BYTES
+end
+
+local function writeColorPixel(pixels: buffer, offset: number, color: Color3, alpha: number)
+	buffer.writeu8(pixels, offset, math.clamp(math.floor(color.R * 255 + 0.5), 0, 255))
+	buffer.writeu8(pixels, offset + 1, math.clamp(math.floor(color.G * 255 + 0.5), 0, 255))
+	buffer.writeu8(pixels, offset + 2, math.clamp(math.floor(color.B * 255 + 0.5), 0, 255))
+	buffer.writeu8(pixels, offset + 3, math.clamp(math.floor(alpha * 255 + 0.5), 0, 255))
+end
+
+local function getDiscreteWaveLoopFrame(tile: InternalOceanTile, time: number): number
+	local frames = math.max(tile._WaveLoopFrames, 1)
+	local framePosition = ((time % tile._WaveLoopDuration) / tile._WaveLoopDuration) * frames
+
+	return math.floor(framePosition + 0.5) % frames
+end
+
+local function sampleBakedHeightFrame(
+	tile: InternalOceanTile,
+	heights: buffer,
+	frameIndex: number,
+	vertexCount: number,
+	localX: number,
+	localZ: number
+): number
+	local resolutionX = tile._ResolutionX
+	local resolutionZ = tile._ResolutionZ
+	local x0, x1, tx = getAxisCell(tile._GridXCoordinates, resolutionX, localX)
+	local z0, z1, tz = getAxisCell(tile._GridZCoordinates, resolutionZ, localZ)
+	local d00 = readWaveLoopHeightFrame(heights, frameIndex, vertexCount, gridIndex(resolutionX, x0, z0))
+	local d10 = readWaveLoopHeightFrame(heights, frameIndex, vertexCount, gridIndex(resolutionX, x1, z0))
+	local d01 = readWaveLoopHeightFrame(heights, frameIndex, vertexCount, gridIndex(resolutionX, x0, z1))
+	local d11 = readWaveLoopHeightFrame(heights, frameIndex, vertexCount, gridIndex(resolutionX, x1, z1))
+	local a = d00 + (d10 - d00) * tx
+	local b = d01 + (d11 - d01) * tx
+
+	return a + (b - a) * tz
+end
+
+local function getSurfaceBakeKey(tile: InternalOceanTile): string
+	local config = tile._Config
+
+	return `{getWaveLoopKey(config)}:{config.SurfaceColorMode}:{config.WaterColorBack.R}:{config.WaterColorBack.G}:{config.WaterColorBack.B}:{config.WaterColorTop.R}:{config.WaterColorTop.G}:{config.WaterColorTop.B}:{config.WaterColorGain}:{config.WaterVertexAlpha}:{config.FoamColor.R}:{config.FoamColor.G}:{config.FoamColor.B}:{config.CrestFoamAlphaBack}:{config.CrestFoamAlphaTop}:{config.CrestFoamAlphaGain}:{config.ShoreFoamStrength}:{config.ShallowDepth}:{config.LakeDepth}:{config.OceanDepth}:{config.FoamNoiseInfluence}:{config.FoamNoiseSize}:{config.FoamNoiseSeed}:{config.FoamTextureStudsPerTile}:{getSurfaceImageResolution(config)}:{#tile._Vertices}:{tile._WaveLoopMinHeight}:{tile._WaveLoopMaxHeight}`
+end
+
+local function writeBakedVertexFrameColor(
+	tile: InternalOceanTile,
+	colors: buffer,
+	surfaceColorConfig: WaterSurfaceColor.SurfaceColorConfig,
+	heights: buffer,
+	frameIndex: number,
+	vertexIndex: number,
+	vertexCount: number,
+	includeFoam: boolean
+)
+	local vertex = tile._Vertices[vertexIndex]
+
+	if vertex == nil then
+		return
+	end
+
+	local localX = vertex.baseLocal.X
+	local localZ = vertex.baseLocal.Z
+	local height = readWaveLoopHeightFrame(heights, frameIndex, vertexCount, vertexIndex)
+	local normalizedHeight = WaterSurfaceColor.NormalizeHeight(height, tile._WaveLoopMinHeight, tile._WaveLoopMaxHeight)
+	local depthAlpha = sampleWaterDepthAlpha(tile, localX, localZ)
+	local offset = surfaceVertexColorOffset(frameIndex, vertexIndex, vertexCount)
+
+	if includeFoam then
+		local shoreFoamAlpha = sampleShoreFoamAlpha(tile, localX, localZ)
+		local sample = WaterSurfaceColor.Sample(surfaceColorConfig, normalizedHeight, shoreFoamAlpha, depthAlpha)
+		local finalColor, finalAlpha = composeSurfaceSample(tile, sample, depthAlpha, localX, localZ)
+
+		writeColorPixel(colors, offset, finalColor, finalAlpha)
+	else
+		local waterSample = WaterSurfaceColor.SampleWater(surfaceColorConfig, normalizedHeight, depthAlpha)
+
+		writeColorPixel(colors, offset, waterSample.Color, waterSample.Alpha)
+	end
+end
+
+local function writeBakedTextureFramePixel(
+	tile: InternalOceanTile,
+	pixels: buffer,
+	surfaceColorConfig: WaterSurfaceColor.SurfaceColorConfig,
+	heights: buffer,
+	frameIndex: number,
+	vertexCount: number,
+	resolution: number,
+	x: number,
+	y: number,
+	foamOnly: boolean
+)
+	local size = tile.SourcePart.Size
+	local u = if resolution > 1 then x / (resolution - 1) else 0
+	local v = if resolution > 1 then y / (resolution - 1) else 0
+	local localX = (u - 0.5) * size.X
+	local localZ = (0.5 - v) * size.Z
+	local height = sampleBakedHeightFrame(tile, heights, frameIndex, vertexCount, localX, localZ)
+	local normalizedHeight = WaterSurfaceColor.NormalizeHeight(height, tile._WaveLoopMinHeight, tile._WaveLoopMaxHeight)
+	local depthAlpha = sampleWaterDepthAlpha(tile, localX, localZ)
+	local offset = surfaceTextureFrameOffset(frameIndex, resolution) + surfaceImagePixelOffset(resolution, x, y)
+	local shoreFoamAlpha = sampleShoreFoamAlpha(tile, localX, localZ)
+
+	if foamOnly then
+		local foam = WaterSurfaceColor.SampleFoam(surfaceColorConfig, normalizedHeight, shoreFoamAlpha)
+		local foamAlpha = resolveFoamAlpha(tile, foam.Alpha, depthAlpha, localX, localZ)
+
+		writeColorPixel(pixels, offset, foam.Color, foamAlpha)
+	else
+		local sample = WaterSurfaceColor.Sample(surfaceColorConfig, normalizedHeight, shoreFoamAlpha, depthAlpha)
+		local finalColor, finalAlpha = composeSurfaceSample(tile, sample, depthAlpha, localX, localZ)
+
+		writeColorPixel(pixels, offset, finalColor, finalAlpha)
+	end
+end
+
+local function bakeSurfaceFrames(tile: InternalOceanTile, key: string): boolean
+	local heights = tile._WaveLoopHeights
+
+	if heights == nil then
+		return false
+	end
+
+	local config = tile._Config
+	local frames = math.max(tile._WaveLoopFrames, 1)
+	local vertexCount = #tile._Vertices
+	local surfaceColorConfig = createSurfaceColorConfig(config)
+	local bakeVertexColors = usesPaintVertices(config)
+	local bakeTexture = usesSurfaceAppearanceTexture(config)
+	local vertexColors = if bakeVertexColors
+		then buffer.create(vertexCount * frames * SURFACE_VERTEX_COLOR_BYTES)
+		else nil
+	local resolution = if bakeTexture then getSurfaceImageResolution(config) else 0
+	local texturePixels = if bakeTexture
+		then buffer.create(resolution * resolution * frames * SURFACE_IMAGE_PIXEL_BYTES)
+		else nil
+	local includeVertexFoam = config.SurfaceColorMode == "PaintVertices"
+	local textureFoamOnly = config.SurfaceColorMode == "FoamSurfaceAppearance"
+	local processedSinceYield = 0
+
+	for frameIndex = 0, frames - 1 do
+		if vertexColors ~= nil then
+			for vertexIndex = 1, vertexCount do
+				writeBakedVertexFrameColor(
+					tile,
+					vertexColors,
+					surfaceColorConfig,
+					heights,
+					frameIndex,
+					vertexIndex,
+					vertexCount,
+					includeVertexFoam
+				)
+
+				processedSinceYield += 1
+
+				if processedSinceYield >= BAKE_YIELD_CELL_BUDGET then
+					processedSinceYield = 0
+					task.wait()
+				end
+			end
+		end
+
+		if texturePixels ~= nil then
+			for y = 0, resolution - 1 do
+				for x = 0, resolution - 1 do
+					writeBakedTextureFramePixel(
+						tile,
+						texturePixels,
+						surfaceColorConfig,
+						heights,
+						frameIndex,
+						vertexCount,
+						resolution,
+						x,
+						y,
+						textureFoamOnly
+					)
+
+					processedSinceYield += 1
+
+					if processedSinceYield >= BAKE_YIELD_CELL_BUDGET then
+						processedSinceYield = 0
+						task.wait()
+					end
+				end
+			end
+		end
+	end
+
+	tile._SurfaceVertexFrameColors = vertexColors
+	tile._SurfaceVertexFrameCount = if vertexColors ~= nil then frames else 0
+	tile._SurfaceVertexLastFrameIndex = -1
+	tile._SurfaceTextureFramePixels = texturePixels
+	tile._SurfaceTextureFrameCount = if texturePixels ~= nil then frames else 0
+	tile._SurfaceTextureFrameResolution = resolution
+	tile._SurfaceTextureRuntimePixels = nil
+	tile._SurfaceTextureLastFrameIndex = -1
+	tile._SurfaceBakeKey = key
+
+	return true
+end
+
+local function ensureSurfaceFrameBake(tile: InternalOceanTile): boolean
+	local config = tile._Config
+
+	if not config.SurfaceColorBake then
+		return false
+	end
+
+	if not usesPaintVertices(config) and not usesSurfaceAppearanceTexture(config) then
+		return false
+	end
+
+	if tile._WaveLoopHeights == nil then
+		return false
+	end
+
+	local needsVertexColors = usesPaintVertices(config)
+	local needsTexture = usesSurfaceAppearanceTexture(config)
+	local hasVertexColors = not needsVertexColors or tile._SurfaceVertexFrameColors ~= nil
+	local hasTexture = not needsTexture
+		or (
+			tile._SurfaceTextureFramePixels ~= nil
+			and tile._SurfaceTextureFrameResolution == getSurfaceImageResolution(config)
+		)
+
+	if tile._SurfaceBakeKey ~= "" and hasVertexColors and hasTexture then
+		return true
+	end
+
+	local key = getSurfaceBakeKey(tile)
+
+	if tile._SurfaceBakeBaking then
+		while tile._SurfaceBakeBaking do
+			task.wait()
+		end
+
+		return tile._SurfaceBakeKey == key
+	end
+
+	if needsVertexColors and not ensureSurfaceVertexColors(tile) then
+		return false
+	end
+
+	if needsTexture and (not ensureSurfaceUVs(tile) or not ensureSurfaceAppearance(tile)) then
+		return false
+	end
+
+	tile._SurfaceBakeBaking = true
+	local baked = false
+
+	local ok, err = pcall(function()
+		baked = bakeSurfaceFrames(tile, key)
+	end)
+
+	tile._SurfaceBakeBaking = false
+
+	if not ok or not baked then
+		resetSurfaceBake(tile)
+		warn("[WaterSystem] Surface RGBA bake failed: " .. tostring(err or "missing wave height bake"))
+		return false
+	end
+
+	return true
+end
+
+local function applyBakedSurfaceVertexColors(tile: InternalOceanTile, time: number): boolean
+	local colors = tile._SurfaceVertexFrameColors
+
+	if colors == nil or tile._SurfaceVertexFrameCount <= 0 then
+		return false
+	end
+
+	if not ensureSurfaceVertexColors(tile) then
+		return false
+	end
+
+	local frameIndex = getDiscreteWaveLoopFrame(tile, time) % tile._SurfaceVertexFrameCount
+
+	if tile._SurfaceVertexLastFrameIndex == frameIndex then
+		return true
+	end
+
+	local vertexCount = #tile._Vertices
+
+	for vertexIndex, colorId in ipairs(tile._SurfaceColorIds) do
+		local offset = surfaceVertexColorOffset(frameIndex, vertexIndex, vertexCount)
+		local r = buffer.readu8(colors, offset)
+		local g = buffer.readu8(colors, offset + 1)
+		local b = buffer.readu8(colors, offset + 2)
+		local a = buffer.readu8(colors, offset + 3) / 255
+
+		if not trySetSurfaceColor(tile, colorId, Color3.fromRGB(r, g, b), a) then
+			return false
+		end
+	end
+
+	tile._SurfaceVertexLastFrameIndex = frameIndex
+	return true
+end
+
+local function applyBakedSurfaceAppearanceTexture(tile: InternalOceanTile, time: number): boolean
+	if not ensureSurfaceAppearance(tile) then
+		return false
+	end
+
+	local image = tile._SurfaceImage
+	local frames = tile._SurfaceTextureFramePixels
+
+	if image == nil or frames == nil or tile._SurfaceTextureFrameCount <= 0 then
+		return false
+	end
+
+	local resolution = tile._SurfaceTextureFrameResolution
+	local frameIndex = getDiscreteWaveLoopFrame(tile, time) % tile._SurfaceTextureFrameCount
+
+	if tile._SurfaceTextureLastFrameIndex == frameIndex then
+		return true
+	end
+
+	local frameBytes = resolution * resolution * SURFACE_IMAGE_PIXEL_BYTES
+
+	if tile._SurfaceTextureRuntimePixels == nil then
+		tile._SurfaceTextureRuntimePixels = buffer.create(frameBytes)
+	end
+
+	local pixels = tile._SurfaceTextureRuntimePixels
+
+	if pixels == nil then
+		return false
+	end
+
+	local ok, err = pcall(function()
+		buffer.copy(pixels, 0, frames, surfaceTextureFrameOffset(frameIndex, resolution), frameBytes)
+		image:WritePixelsBuffer(Vector2.new(0, 0), Vector2.new(resolution, resolution), pixels)
+	end)
+
+	if not ok then
+		tile._SurfaceAppearanceSupported = false
+		warnSurfaceColorUnsupported(tile, err)
+		return false
+	end
+
+	tile._SurfaceTextureLastFrameIndex = frameIndex
+	tile._SurfaceTextureLastUpdateTime = time
+	return true
+end
+
+local function updateSurfaceAppearanceTexture(tile: InternalOceanTile, time: number, waterBuffer: WaterBuffer.WaterBuffer?)
+	if not ensureSurfaceAppearance(tile) then
+		return
+	end
+
+	local image = tile._SurfaceImage
+
+	if image == nil then
+		return
+	end
+
+	local interval = math.max(tile._Config.FoamTextureUpdateInterval, 0)
+
+	if interval > 0 and time - tile._SurfaceTextureLastUpdateTime < interval then
+		return
+	end
+
+	tile._SurfaceTextureLastUpdateTime = time
+
+	local resolution = math.max(tile._SurfaceImageResolution, 1)
+	local pixels = buffer.create(resolution * resolution * SURFACE_IMAGE_PIXEL_BYTES)
+	local size = tile.SourcePart.Size
+	local surfaceColorConfig = createSurfaceColorConfig(tile._Config)
+	local foamOnly = tile._Config.SurfaceColorMode == "FoamSurfaceAppearance"
+
+	for y = 0, resolution - 1 do
+		local v = if resolution > 1 then y / (resolution - 1) else 0
+		local localZ = (0.5 - v) * size.Z
+
+		for x = 0, resolution - 1 do
+			local u = if resolution > 1 then x / (resolution - 1) else 0
+			local localX = (u - 0.5) * size.X
+			local height = sampleBakedHeight(tile, localX, localZ, time)
+
+			if not tile._Config.SurfaceColorBake and waterBuffer ~= nil and waterBuffer:HasActivity() then
+				height += waterBuffer:SampleHeight(localX, localZ)
+			end
+
+			local normalizedHeight = WaterSurfaceColor.NormalizeHeight(
+				height,
+				tile._WaveLoopMinHeight,
+				tile._WaveLoopMaxHeight
+			)
+			local depthAlpha = sampleWaterDepthAlpha(tile, localX, localZ)
+			local offset = surfaceImagePixelOffset(resolution, x, y)
+			local shoreFoamAlpha = sampleShoreFoamAlpha(tile, localX, localZ)
+
+			if foamOnly then
+				local foam = WaterSurfaceColor.SampleFoam(surfaceColorConfig, normalizedHeight, shoreFoamAlpha)
+				local foamAlpha = resolveFoamAlpha(tile, foam.Alpha, depthAlpha, localX, localZ)
+
+				writeColorPixel(pixels, offset, foam.Color, foamAlpha)
+			else
+				local sample = WaterSurfaceColor.Sample(surfaceColorConfig, normalizedHeight, shoreFoamAlpha, depthAlpha)
+				local finalColor, finalAlpha = composeSurfaceSample(tile, sample, depthAlpha, localX, localZ)
+
+				writeColorPixel(pixels, offset, finalColor, finalAlpha)
+			end
+		end
+	end
+
+	local ok, err = pcall(function()
+		image:WritePixelsBuffer(Vector2.new(0, 0), Vector2.new(resolution, resolution), pixels)
+	end)
+
+	if not ok then
+		tile._SurfaceAppearanceSupported = false
+		warnSurfaceColorUnsupported(tile, err)
+	end
 end
 
 function OceanTileClass:_SetFlat()
@@ -1447,6 +2504,21 @@ function OceanTileClass:Update(time: number, camera: Camera?, renderVisible: boo
 	end
 
 	local interactiveBufferActive = physicsActive and waterBuffer ~= nil and waterBuffer:HasActivity()
+	local surfaceBakeActive = self._Config.SurfaceColorBake and ensureSurfaceFrameBake(self)
+	local paintSurfaceColors = usesPaintVertices(self._Config) and ensureSurfaceVertexColors(self)
+	local paintSurfaceFoam = self._Config.SurfaceColorMode == "PaintVertices"
+	local surfaceAppearanceWaterBuffer = if interactiveBufferActive then waterBuffer else nil
+	local surfaceColorConfig: WaterSurfaceColor.SurfaceColorConfig? = nil
+
+	if paintSurfaceColors and surfaceBakeActive then
+		if not applyBakedSurfaceVertexColors(self, time) then
+			surfaceBakeActive = false
+			surfaceColorConfig = createSurfaceColorConfig(self._Config)
+		end
+	elseif paintSurfaceColors then
+		surfaceColorConfig = createSurfaceColorConfig(self._Config)
+	end
+
 	ensureRingLodCache(self, cameraLocal.X, cameraLocal.Z)
 
 	local ringIndices = self._RingLodIndices
@@ -1498,6 +2570,27 @@ function OceanTileClass:Update(time: number, camera: Camera?, renderVisible: boo
 		if not trySetVertexPosition(self, vertex.id, localPosition) then
 			return
 		end
+
+		if paintSurfaceColors and not surfaceBakeActive and surfaceColorConfig ~= nil then
+			local colorHeight = if self._Config.SurfaceColorBake then dy else localPosition.Y
+			local depthAlpha = sampleWaterDepthAlpha(self, baseLocal.X, baseLocal.Z)
+			paintSurfaceVertex(
+				self,
+				surfaceColorConfig :: WaterSurfaceColor.SurfaceColorConfig,
+				vertexIndex,
+				colorHeight,
+				paintSurfaceFoam,
+				depthAlpha,
+				baseLocal.X,
+				baseLocal.Z
+			)
+		end
+	end
+
+	if usesSurfaceAppearanceTexture(self._Config) then
+		if not surfaceBakeActive or not applyBakedSurfaceAppearanceTexture(self, time) then
+			updateSurfaceAppearanceTexture(self, time, surfaceAppearanceWaterBuffer)
+		end
 	end
 
 	self._IsFlat = false
@@ -1546,7 +2639,10 @@ function OceanTileClass:SetSpectrum(spectrum: WaveSpectrum.WaveSpectrum)
 	self._Spectrum = spectrum
 	self._WaveLoopPositions = nil
 	self._WaveLoopHeights = nil
+	self._WaveLoopMinHeight = 0
+	self._WaveLoopMaxHeight = 0
 	self._WaveLoopKey = ""
+	resetSurfaceBake(self)
 end
 
 function OceanTileClass:SetConfig(config: TileConfig)
@@ -1564,8 +2660,12 @@ function OceanTileClass:SetConfig(config: TileConfig)
 	else
 		self._WaveLoopPositions = nil
 		self._WaveLoopHeights = nil
+		self._WaveLoopMinHeight = 0
+		self._WaveLoopMaxHeight = 0
 		self._WaveLoopKey = ""
 	end
+
+	resetSurfaceBake(self)
 
 	self._RingLodIndices = nil
 	self._RingLodCount = 0
@@ -1574,7 +2674,19 @@ function OceanTileClass:SetConfig(config: TileConfig)
 	self._ObstacleImpactVertices = nil
 	self._ObstacleImpactVertexCount = 0
 
-	self.MeshPart.Color = config.WaterColorBack
+	if usesSurfaceAppearanceTexture(config) then
+		ensureSurfaceUVs(self)
+	end
+
+	local hasVertexColors = usesPaintVertices(config) and ensureSurfaceVertexColors(self)
+	local hasSurfaceAppearance = ensureSurfaceAppearance(self)
+
+	if shouldUseWhiteMeshColor(config, hasVertexColors, hasSurfaceAppearance) then
+		self.MeshPart.Color = Color3.new(1, 1, 1)
+	else
+		self.MeshPart.Color = config.WaterColorBack
+	end
+
 	self.MeshPart.Transparency = config.Transparency
 	self.MeshPart.Reflectance = config.Reflectance
 
@@ -1701,7 +2813,7 @@ function OceanTileClass:IsPointInWaterVolume(
 	end
 
 	local surfaceHeight = self:GetHeightAt(worldPosition, time, 1) + (surfacePadding or 0)
-	local bottomLocalY = -math.max(self.SourcePart.Size.Y, 0.1) - (bottomPadding or 0)
+	local bottomLocalY = -getVolumeDepth(self, localPosition.X, localPosition.Z) - (bottomPadding or 0)
 	local bottomWorld = self.BaseCFrame:PointToWorldSpace(Vector3.new(localPosition.X, bottomLocalY, localPosition.Z)).Y
 
 	return worldPosition.Y <= surfaceHeight and worldPosition.Y >= bottomWorld
@@ -1769,6 +2881,7 @@ end
 
 function OceanTileClass:Destroy()
 	self._Destroyed = true
+	destroySurfaceAppearance(self)
 
 	if self._HiddenSourcePart then
 		self.SourcePart.LocalTransparencyModifier = self._SourceLocalTransparencyModifier
@@ -1841,12 +2954,42 @@ function OceanTile.new(
 		_WaveLoopDuration = math.max(config.WaveLoopDuration, 0.25),
 		_WaveLoopKey = "",
 		_WaveLoopBaking = false,
+		_WaveLoopMinHeight = 0,
+		_WaveLoopMaxHeight = 0,
+		_SurfaceColorIds = {},
+		_SurfaceUVIds = {},
+		_SurfaceImage = nil,
+		_SurfaceImageResolution = 0,
+		_SurfaceAppearance = nil,
+		_SurfaceTextureLastUpdateTime = -math.huge,
+		_SurfaceTextureLastFrameIndex = -1,
+		_SurfaceTextureFramePixels = nil,
+		_SurfaceTextureFrameCount = 0,
+		_SurfaceTextureFrameResolution = 0,
+		_SurfaceTextureRuntimePixels = nil,
+		_SurfaceVertexFrameColors = nil,
+		_SurfaceVertexFrameCount = 0,
+		_SurfaceVertexLastFrameIndex = -1,
+		_SurfaceBakeKey = "",
+		_SurfaceBakeBaking = false,
+		_SurfaceColorSupported = true,
+		_SurfaceUVSupported = true,
+		_SurfaceAppearanceSupported = true,
+		_SurfaceColorWarningShown = false,
 		_ObstacleImpactVertices = nil,
 		_ObstacleImpactVertexCount = 0,
 		_LastObstacleSplashTime = 0,
 	}, OceanTileClass) :: any
 
 	buildMesh(tile)
+
+	if usesSurfaceAppearanceTexture(config) then
+		ensureSurfaceUVs(tile)
+	end
+
+	if usesPaintVertices(config) then
+		ensureSurfaceVertexColors(tile)
+	end
 
 	local meshPart, meshPartError = createMeshPart(editableMesh)
 
@@ -1865,6 +3008,14 @@ function OceanTile.new(
 	meshPart.CFrame = tile.BaseCFrame
 	meshPart.Parent = parent
 	tile.MeshPart = meshPart
+
+	local hasSurfaceAppearance = ensureSurfaceAppearance(tile)
+	local hasVertexColors = usesPaintVertices(config) and tile._SurfaceColorSupported
+
+	if shouldUseWhiteMeshColor(config, hasVertexColors, hasSurfaceAppearance) then
+		meshPart.Color = Color3.new(1, 1, 1)
+	end
+
 	configureSeaSpray(tile)
 	configureSplashParticles(tile)
 
