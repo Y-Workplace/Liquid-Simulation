@@ -24,7 +24,7 @@ local ocean = WaterSystem.new({
 		ShoreStrength = 0.08,
 	},
 	Waves = {
-		ShallowScale = 0.04,
+		ShallowScale = 0.12,
 	},
 })
 ```
@@ -87,7 +87,7 @@ O sistema cria um painel runtime estilo Godot/ImGui quando o cliente inicia.
 - `OceanDepthMapResolution` number: resolucao do mapa de profundidade. Padrao `12`.
 - `OceanMaxRaycastDepth` number: profundidade maxima do raycast. Padrao `180`.
 - `OceanFallbackDepth` number: profundidade usada quando o raycast nao acha fundo. Padrao `180`.
-- `OceanShallowWaveScale` number: escala de onda em agua rasa/praia. Padrao `0.04` para manter ondas quase nulas onde o `DepthMap` raycastado indica pouca profundidade.
+- `OceanShallowWaveScale` number: escala de onda em agua rasa/praia. Padrao `0.12` para manter ondas amortecidas, mas ainda visiveis onde o `DepthMap` raycastado indica pouca profundidade.
 - `OceanDeepWaveScale` number: escala de onda em agua profunda. Padrao `1.08`.
 - `OceanShallowDepth` number: ate onde a agua e tratada como rasa. Padrao `10`.
 - `OceanLakeDepth` number: profundidade onde a cascade media/lago domina. Padrao `42`.
@@ -128,6 +128,9 @@ O sistema cria um painel runtime estilo Godot/ImGui quando o cliente inicia.
 - `OceanCrestFoamAlphaBack` number: alpha do foam de crista quando a mascara fina de crista e `0`. Padrao `0`.
 - `OceanCrestFoamAlphaTop` number: alpha do foam de crista quando a mascara fina de crista e `1`. Padrao `1`.
 - `OceanCrestFoamAlphaGain` number: ganho do gradiente de alpha do foam de crista. A mascara comeca perto do topo da onda e valores maiores deixam a espuma menos transparente e mais acumulada na crista, separado do gradiente verde da agua. Padrao `1`.
+- `OceanWaveFoamAlphaBack` number: alpha inicial da camada larga de foam no corpo da onda. Padrao `0`.
+- `OceanWaveFoamAlphaTop` number: alpha maximo da camada larga de foam acumulada perto do topo da onda. Padrao `0.42`.
+- `OceanWaveFoamAlphaGain` number: ganho da camada larga de foam de ondas; menor deixa o desenho mais suave, maior aproxima do topo. Padrao `0.78`.
 - `OceanPhysicalInteractionEnabled` boolean: ativa interacao automatica com partes fisicas. Padrao `true`.
 - `OceanPlayerInteractionEnabled` boolean: usa apenas `HumanoidRootPart` como caixa do player. Padrao `true`.
 - `OceanBuoyancyEnabled` boolean: ativa empuxo automatico em Parts nao anchored, separado do player. Padrao `true`.

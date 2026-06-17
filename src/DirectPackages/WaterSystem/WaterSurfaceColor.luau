@@ -14,6 +14,9 @@ export type SurfaceColorConfig = {
 	CrestFoamAlphaBack: number,
 	CrestFoamAlphaTop: number,
 	CrestFoamAlphaGain: number,
+	WaveFoamAlphaBack: number,
+	WaveFoamAlphaTop: number,
+	WaveFoamAlphaGain: number,
 }
 
 export type SurfaceSample = {
@@ -40,6 +43,7 @@ local WaterSurfaceColor = {}
 
 local DEFAULT_MODE: SurfaceColorMode = "PaintVertices"
 local CREST_FOAM_START_HEIGHT = 0.78
+local WAVE_FOAM_START_HEIGHT = 0.48
 local EPSILON = 1e-6
 
 local VALID_MODES: { [string]: boolean } = {
@@ -63,6 +67,14 @@ end
 local function crestFoamGradientPosition(normalizedHeight: number, gain: number): number
 	local t =
 		math.clamp((normalizedHeight - CREST_FOAM_START_HEIGHT) / math.max(1 - CREST_FOAM_START_HEIGHT, EPSILON), 0, 1)
+	local topWeighted = t * t * (3 - 2 * t)
+
+	return math.clamp(topWeighted * math.max(gain, 0), 0, 1)
+end
+
+local function waveFoamGradientPosition(normalizedHeight: number, gain: number): number
+	local t =
+		math.clamp((normalizedHeight - WAVE_FOAM_START_HEIGHT) / math.max(1 - WAVE_FOAM_START_HEIGHT, EPSILON), 0, 1)
 	local topWeighted = t * t * (3 - 2 * t)
 
 	return math.clamp(topWeighted * math.max(gain, 0), 0, 1)
@@ -112,7 +124,10 @@ function WaterSurfaceColor.SampleFoam(
 	local foamPosition = crestFoamGradientPosition(heightAlpha, config.CrestFoamAlphaGain)
 	local crestFoamAlpha =
 		math.clamp(lerpNumber(config.CrestFoamAlphaBack, config.CrestFoamAlphaTop, foamPosition), 0, 1)
-	local foamAlpha = math.clamp((math.max(crestFoamAlpha, extraFoamAlpha or 0)), 0, 1)
+	local waveFoamPosition = waveFoamGradientPosition(heightAlpha, config.WaveFoamAlphaGain)
+	local waveFoamAlpha =
+		math.clamp(lerpNumber(config.WaveFoamAlphaBack, config.WaveFoamAlphaTop, waveFoamPosition), 0, 1)
+	local foamAlpha = math.clamp((math.max(crestFoamAlpha, waveFoamAlpha, extraFoamAlpha or 0)), 0, 1)
 
 	return {
 		Color = config.FoamColor,
@@ -157,6 +172,9 @@ function WaterSurfaceColor.BuildConfig(options: {
 	CrestFoamAlphaBack: number,
 	CrestFoamAlphaTop: number,
 	CrestFoamAlphaGain: number,
+	WaveFoamAlphaBack: number,
+	WaveFoamAlphaTop: number,
+	WaveFoamAlphaGain: number,
 }): SurfaceColorConfig
 	return {
 		Bake = options.SurfaceColorBake,
@@ -170,6 +188,9 @@ function WaterSurfaceColor.BuildConfig(options: {
 		CrestFoamAlphaBack = options.CrestFoamAlphaBack,
 		CrestFoamAlphaTop = options.CrestFoamAlphaTop,
 		CrestFoamAlphaGain = options.CrestFoamAlphaGain,
+		WaveFoamAlphaBack = options.WaveFoamAlphaBack,
+		WaveFoamAlphaTop = options.WaveFoamAlphaTop,
+		WaveFoamAlphaGain = options.WaveFoamAlphaGain,
 	}
 end
 

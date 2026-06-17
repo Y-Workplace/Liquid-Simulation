@@ -308,7 +308,7 @@ local function resolveConfig(folder: Instance, options: WaterSystemOptions): Oce
 			readNumberAttribute(
 				folder,
 				"OceanShallowWaveScale",
-				options.ShallowWaveScale or DEFAULT_OPTIONS.ShallowWaveScale
+				options.ShallowWaveScale or options.ShallowScale or DEFAULT_OPTIONS.ShallowWaveScale
 			),
 			0,
 			2
@@ -446,6 +446,33 @@ local function resolveConfig(folder: Instance, options: WaterSystemOptions): Oce
 				folder,
 				"OceanCrestFoamAlphaGain",
 				options.CrestFoamAlphaGain or DEFAULT_OPTIONS.CrestFoamAlphaGain
+			),
+			0,
+			1
+		),
+		WaveFoamAlphaBack = math.clamp(
+			readNumberAttribute(
+				folder,
+				"OceanWaveFoamAlphaBack",
+				options.WaveFoamAlphaBack or DEFAULT_OPTIONS.WaveFoamAlphaBack
+			),
+			0,
+			1
+		),
+		WaveFoamAlphaTop = math.clamp(
+			readNumberAttribute(
+				folder,
+				"OceanWaveFoamAlphaTop",
+				options.WaveFoamAlphaTop or DEFAULT_OPTIONS.WaveFoamAlphaTop
+			),
+			0,
+			1
+		),
+		WaveFoamAlphaGain = math.clamp(
+			readNumberAttribute(
+				folder,
+				"OceanWaveFoamAlphaGain",
+				options.WaveFoamAlphaGain or DEFAULT_OPTIONS.WaveFoamAlphaGain
 			),
 			0,
 			1

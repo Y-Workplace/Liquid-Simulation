@@ -59,6 +59,9 @@ export type TileConfig = {
 	CrestFoamAlphaBack: number,
 	CrestFoamAlphaTop: number,
 	CrestFoamAlphaGain: number,
+	WaveFoamAlphaBack: number,
+	WaveFoamAlphaTop: number,
+	WaveFoamAlphaGain: number,
 	ShallowDepth: number,
 	LakeDepth: number,
 	OceanDepth: number,
@@ -1130,6 +1133,9 @@ local function createSurfaceColorConfig(config: TileConfig): WaterSurfaceColor.S
 		CrestFoamAlphaBack = config.CrestFoamAlphaBack,
 		CrestFoamAlphaTop = config.CrestFoamAlphaTop,
 		CrestFoamAlphaGain = config.CrestFoamAlphaGain,
+		WaveFoamAlphaBack = config.WaveFoamAlphaBack,
+		WaveFoamAlphaTop = config.WaveFoamAlphaTop,
+		WaveFoamAlphaGain = config.WaveFoamAlphaGain,
 	})
 end
 
@@ -1669,6 +1675,54 @@ local function sampleWaterDepthAlpha(tile: InternalOceanTile, localX: number, lo
 	return smoothstep(config.ShallowDepth, oceanDepth, depth)
 end
 
+local function sampleDepthGradient(tile: InternalOceanTile, localX: number, localZ: number): Vector2
+	if tile._DepthMap == nil then
+		return Vector2.zero
+	end
+
+	local step = math.max(tile._Config.VertexSpacing * 2, 1)
+	local dx = sampleDepth(tile._DepthMap, tile._Config, localX + step, localZ)
+		- sampleDepth(tile._DepthMap, tile._Config, localX - step, localZ)
+	local dz = sampleDepth(tile._DepthMap, tile._Config, localX, localZ + step)
+		- sampleDepth(tile._DepthMap, tile._Config, localX, localZ - step)
+	local gradient = Vector2.new(dx, dz)
+
+	if gradient.Magnitude <= 1e-4 then
+		return Vector2.zero
+	end
+
+	return gradient.Unit
+end
+
+local function getShallowWaveSampleXZ(
+	tile: InternalOceanTile,
+	localX: number,
+	localZ: number,
+	worldX: number,
+	worldZ: number,
+	shallowWeight: number
+): (number, number)
+	local shallowInfluence = math.clamp(shallowWeight, 0, 1)
+
+	if shallowInfluence <= 0.001 then
+		return worldX, worldZ
+	end
+
+	local depthGradient = sampleDepthGradient(tile, localX, localZ)
+	local shoreTangent = if depthGradient.Magnitude > 0.001
+		then Vector2.new(-depthGradient.Y, depthGradient.X)
+		else Vector2.new(0.707, 0.707)
+	local noiseA = hashNoise(localX * 0.071, localZ * 0.071, tile._Config.FoamNoiseSeed + 17)
+	local noiseB = hashNoise(localX * 0.137 + 19, localZ * 0.109 - 7, tile._Config.FoamNoiseSeed + 29)
+	local ripple = math.sin((localX * 0.19 + localZ * 0.11) + (noiseA - 0.5) * math.pi)
+	local tangentOffset = shoreTangent * ((noiseA - 0.5) * 9 + ripple * 2.5)
+	local crossOffset = depthGradient * ((noiseB - 0.5) * 5)
+	local localOffset = (tangentOffset + crossOffset) * shallowInfluence * shallowInfluence
+	local worldOffset = tile.BaseCFrame:VectorToWorldSpace(Vector3.new(localOffset.X, 0, localOffset.Y))
+
+	return worldX + worldOffset.X, worldZ + worldOffset.Z
+end
+
 sampleShoreFoamAlpha = function(tile: InternalOceanTile, localX: number, localZ: number): number
 	local config = tile._Config
 
@@ -1708,7 +1762,9 @@ local function sampleFoamBreakup(tile: InternalOceanTile, localX: number, localZ
 	local nx0 = lerpNumber(n00, n10, tx)
 	local nx1 = lerpNumber(n01, n11, tx)
 	local noise = lerpNumber(nx0, nx1, tz)
-	local mask = 0.55 + noise * 0.45
+	local filament = math.abs(hashNoise(x0 * 0.41 + z0 * 0.13, z0 * 0.37 - x0 * 0.09, seed + 97) - 0.5) * 2
+	local cells = smoothstep(0.18, 0.86, 1 - math.abs(noise - 0.5) * 2)
+	local mask = 0.38 + math.max(cells, filament * 0.72) * 0.62
 
 	return lerpNumber(1, mask, influence)
 end
@@ -1724,7 +1780,7 @@ local function resolveFoamAlpha(
 		return 0
 	end
 
-	local shallowFade = lerpNumber(0.18, 1, math.clamp(depthAlpha, 0, 1))
+	local shallowFade = lerpNumber(0.32, 1, math.clamp(depthAlpha, 0, 1))
 
 	return math.clamp(foamAlpha * shallowFade * sampleFoamBreakup(tile, localX, localZ), 0, 1)
 end
@@ -1737,8 +1793,10 @@ composeSurfaceSample = function(
 	localZ: number
 ): (Color3, number)
 	local foamAlpha = resolveFoamAlpha(tile, sample.FoamAlpha, depthAlpha, localX, localZ)
-	local finalColor = lerpColor(sample.WaterColor, sample.FoamColor, foamAlpha)
-	local finalAlpha = math.clamp(sample.WaterAlpha + (1 - sample.WaterAlpha) * foamAlpha, 0, 1)
+	local shallowTint = (1 - math.clamp(depthAlpha, 0, 1)) * (1 - foamAlpha * 0.42)
+	local waterColor = lerpColor(sample.WaterColor, tile._Config.WaterColorTop, math.clamp(shallowTint * 0.62, 0, 1))
+	local finalColor = lerpColor(waterColor, sample.FoamColor, foamAlpha)
+	local finalAlpha = math.clamp(sample.WaterAlpha + (1 - sample.WaterAlpha) * foamAlpha * 0.82, 0, 1)
 
 	return finalColor, finalAlpha
 end
@@ -1765,7 +1823,7 @@ local function sampleObstacleAttenuation(
 end
 
 local function getWaveLoopGeometryKey(config: TileConfig): string
-	return `{WAVE_BAKE_VERSION}:{math.clamp(math.round(config.WaveLoopFrames), 2, 240)}:{math.max(config.WaveLoopDuration, 0.25)}:{config.ShallowWaveScale}:{config.DeepWaveScale}:{config.ShallowDepth}:{config.LakeDepth}:{config.OceanDepth}:{config.ObstacleWaveDamping}`
+	return `{WAVE_BAKE_VERSION}:{math.clamp(math.round(config.WaveLoopFrames), 2, 240)}:{math.max(config.WaveLoopDuration, 0.25)}:{config.ShallowWaveScale}:{config.DeepWaveScale}:{config.ShallowDepth}:{config.LakeDepth}:{config.OceanDepth}:{config.ObstacleWaveDamping}:{config.FoamNoiseSeed}`
 end
 
 local function getWaveLoopKey(config: TileConfig): string
@@ -1804,9 +1862,11 @@ local function bakeWaveLoop(tile: InternalOceanTile)
 		local obstacleAttenuation = sampleObstacleAttenuation(tile._ObstacleMap, localX, localZ, config.ObstacleWaveDamping)
 		local depthWaveScale = config.ShallowWaveScale + (config.DeepWaveScale - config.ShallowWaveScale) * deepFactor
 		local waveScale = depthWaveScale * obstacleAttenuation * vertex.waveInfluence
+		local sampleWorldX, sampleWorldZ =
+			getShallowWaveSampleXZ(tile, localX, localZ, baseWorld.X, baseWorld.Z, shallowWeight)
 
-		buffer.writef32(static, vertexBakeStaticOffset(vertexIndex, VERTEX_STATIC_BASE_WORLD_X), baseWorld.X)
-		buffer.writef32(static, vertexBakeStaticOffset(vertexIndex, VERTEX_STATIC_BASE_WORLD_Z), baseWorld.Z)
+		buffer.writef32(static, vertexBakeStaticOffset(vertexIndex, VERTEX_STATIC_BASE_WORLD_X), sampleWorldX)
+		buffer.writef32(static, vertexBakeStaticOffset(vertexIndex, VERTEX_STATIC_BASE_WORLD_Z), sampleWorldZ)
 		buffer.writef32(static, vertexBakeStaticOffset(vertexIndex, VERTEX_STATIC_WAVE_SCALE), waveScale)
 		buffer.writef32(static, vertexBakeStaticOffset(vertexIndex, VERTEX_STATIC_OCEAN_WEIGHT), oceanWeight)
 		buffer.writef32(static, vertexBakeStaticOffset(vertexIndex, VERTEX_STATIC_LAKE_WEIGHT), lakeWeight)
@@ -2066,7 +2126,7 @@ end
 local function getSurfaceBakeKey(tile: InternalOceanTile): string
 	local config = tile._Config
 
-	return `{getWaveLoopKey(config)}:{config.SurfaceColorMode}:{config.WaterColorBack.R}:{config.WaterColorBack.G}:{config.WaterColorBack.B}:{config.WaterColorTop.R}:{config.WaterColorTop.G}:{config.WaterColorTop.B}:{config.WaterColorGain}:{config.WaterVertexAlpha}:{config.FoamColor.R}:{config.FoamColor.G}:{config.FoamColor.B}:{config.CrestFoamAlphaBack}:{config.CrestFoamAlphaTop}:{config.CrestFoamAlphaGain}:{config.ShoreFoamStrength}:{config.ShallowDepth}:{config.LakeDepth}:{config.OceanDepth}:{config.FoamNoiseInfluence}:{config.FoamNoiseSize}:{config.FoamNoiseSeed}:{config.FoamTextureStudsPerTile}:{getSurfaceImageResolution(config)}:{#tile._Vertices}:{tile._WaveLoopMinHeight}:{tile._WaveLoopMaxHeight}`
+	return `{getWaveLoopKey(config)}:{config.SurfaceColorMode}:{config.WaterColorBack.R}:{config.WaterColorBack.G}:{config.WaterColorBack.B}:{config.WaterColorTop.R}:{config.WaterColorTop.G}:{config.WaterColorTop.B}:{config.WaterColorGain}:{config.WaterVertexAlpha}:{config.FoamColor.R}:{config.FoamColor.G}:{config.FoamColor.B}:{config.CrestFoamAlphaBack}:{config.CrestFoamAlphaTop}:{config.CrestFoamAlphaGain}:{config.WaveFoamAlphaBack}:{config.WaveFoamAlphaTop}:{config.WaveFoamAlphaGain}:{config.ShoreFoamStrength}:{config.ShallowDepth}:{config.LakeDepth}:{config.OceanDepth}:{config.FoamNoiseInfluence}:{config.FoamNoiseSize}:{config.FoamNoiseSeed}:{config.FoamTextureStudsPerTile}:{getSurfaceImageResolution(config)}:{#tile._Vertices}:{tile._WaveLoopMinHeight}:{tile._WaveLoopMaxHeight}`
 end
 
 local function writeBakedVertexFrameColor(
