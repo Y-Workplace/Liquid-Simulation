@@ -19,6 +19,24 @@ local function cascadeAttr(index: number, key: string): string
 	return "OceanCascade" .. tostring(index) .. key
 end
 
+local function resolveRuntimeSurfaceColorEnabled(options: WaterSystemOptions): boolean
+	local runtimeSurfaceColorEnabled = options.RuntimeSurfaceColorEnabled
+
+	if runtimeSurfaceColorEnabled ~= nil then
+		return runtimeSurfaceColorEnabled
+	end
+
+	return options.OceanRuntimeSurfaceColorEnabled == true
+end
+
+local function resolveBooleanOption(value: boolean?, defaultValue: boolean): boolean
+	if value ~= nil then
+		return value
+	end
+
+	return defaultValue
+end
+
 local function resolveConfig(folder: Instance, options: WaterSystemOptions): OceanTile.TileConfig
 	local lod0Radius =
 		math.max(readNumberAttribute(folder, "OceanLod0Radius", options.Lod0Radius or DEFAULT_OPTIONS.Lod0Radius), 0)
@@ -343,31 +361,32 @@ local function resolveConfig(folder: Instance, options: WaterSystemOptions): Oce
 			),
 			0
 		),
-		CrestFoamStrength = math.clamp(
+		CrestFoamAlphaBack = math.clamp(
 			readNumberAttribute(
 				folder,
-				"OceanCrestFoamStrength",
-				options.CrestFoamStrength or DEFAULT_OPTIONS.CrestFoamStrength
+				"OceanCrestFoamAlphaBack",
+				options.CrestFoamAlphaBack or DEFAULT_OPTIONS.CrestFoamAlphaBack
 			),
 			0,
-			3
+			1
 		),
-		HighWaveFoamThreshold = math.max(
+		CrestFoamAlphaTop = math.clamp(
 			readNumberAttribute(
 				folder,
-				"OceanHighWaveFoamThreshold",
-				options.HighWaveFoamThreshold or DEFAULT_OPTIONS.HighWaveFoamThreshold
-			),
-			0.001
-		),
-		HighWaveFoamStrength = math.clamp(
-			readNumberAttribute(
-				folder,
-				"OceanHighWaveFoamStrength",
-				options.HighWaveFoamStrength or DEFAULT_OPTIONS.HighWaveFoamStrength
+				"OceanCrestFoamAlphaTop",
+				options.CrestFoamAlphaTop or DEFAULT_OPTIONS.CrestFoamAlphaTop
 			),
 			0,
-			3
+			1
+		),
+		CrestFoamAlphaGain = math.clamp(
+			readNumberAttribute(
+				folder,
+				"OceanCrestFoamAlphaGain",
+				options.CrestFoamAlphaGain or DEFAULT_OPTIONS.CrestFoamAlphaGain
+			),
+			0,
+			1
 		),
 		ShallowDepth = math.max(
 			readNumberAttribute(folder, "OceanShallowDepth", options.ShallowDepth or DEFAULT_OPTIONS.ShallowDepth),
@@ -451,17 +470,36 @@ local function resolveConfig(folder: Instance, options: WaterSystemOptions): Oce
 			),
 			0.05
 		),
-		WaterColor = readColorAttribute(folder, "OceanWaterColor", options.WaterColor or DEFAULT_OPTIONS.WaterColor),
+		WaterColor = readColorAttribute(
+			folder,
+			"OceanWaterColor",
+			options.WaterColorBack or options.WaterColor or DEFAULT_OPTIONS.WaterColorBack
+		),
 		WaterTintColor = readColorAttribute(
 			folder,
 			"OceanWaterTintColor",
-			options.WaterTintColor or DEFAULT_OPTIONS.WaterTintColor
+			options.WaterColorTop or options.WaterTintColor or DEFAULT_OPTIONS.WaterColorTop
+		),
+		WaterColorBack = readColorAttribute(
+			folder,
+			"OceanWaterColor",
+			options.WaterColorBack or options.WaterColor or DEFAULT_OPTIONS.WaterColorBack
+		),
+		WaterColorTop = readColorAttribute(
+			folder,
+			"OceanWaterTintColor",
+			options.WaterColorTop or options.WaterTintColor or DEFAULT_OPTIONS.WaterColorTop
+		),
+		WaterColorGain = math.clamp(
+			readNumberAttribute(folder, "OceanWaterColorGain", options.WaterColorGain or DEFAULT_OPTIONS.WaterColorGain),
+			0,
+			1
 		),
 		FoamColor = readColorAttribute(folder, "OceanFoamColor", options.FoamColor or DEFAULT_OPTIONS.FoamColor),
 		RuntimeSurfaceColorEnabled = readBooleanAttribute(
 			folder,
 			"OceanRuntimeSurfaceColorEnabled",
-			options.RuntimeSurfaceColorEnabled == true
+			resolveRuntimeSurfaceColorEnabled(options)
 		),
 		WaterVertexAlpha = math.clamp(
 			readNumberAttribute(folder, "OceanWaterVertexAlpha", options.WaterVertexAlpha or 0.5),
@@ -507,7 +545,7 @@ local function resolveConfig(folder: Instance, options: WaterSystemOptions): Oce
 		FoamTextureFromVerticesEnabled = readBooleanAttribute(
 			folder,
 			"OceanFoamTextureFromVerticesEnabled",
-			options.FoamTextureFromVerticesEnabled ~= false
+			resolveBooleanOption(options.FoamTextureFromVerticesEnabled, DEFAULT_OPTIONS.FoamTextureFromVerticesEnabled)
 		),
 		FoamTextureUpdateInterval = math.max(
 			readNumberAttribute(
