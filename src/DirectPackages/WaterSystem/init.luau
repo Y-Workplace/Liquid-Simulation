@@ -32,6 +32,15 @@ local WaterSystemClass = {}
 WaterSystemClass.__index = WaterSystemClass
 
 local activeSystem: InternalWaterSystem? = nil
+local EXTERNAL_STATE_INTERVAL = 1 / 30
+local WAVE_BUFFER_INTERVAL = 1 / 40
+local SURFACE_BUFFER_INTERVAL = 1 / 30
+local EFFECT_BUFFER_INTERVAL = 1 / 12
+
+local function now(): number
+	return time()
+end
+
 local function disconnectAll(connections: { RBXScriptConnection }?)
 	if connections == nil then
 		return
@@ -95,56 +104,6 @@ local function readFolderNumber(sourceFolder: Instance?, name: string, fallback:
 	end
 
 	return readNumberAttribute(sourceFolder, name, fallback)
-end
-
-local function getTileUpdateRate(
-	sourceFolder: Instance?,
-	options: WaterSystemOptions,
-	config: OceanTile.TileConfig,
-	distance: number
-): number
-	local globalRate = if sourceFolder
-		then readNumberAttribute(
-			sourceFolder,
-			"OceanUpdatesPerSecond",
-			options.UpdatesPerSecond or DEFAULT_OPTIONS.UpdatesPerSecond
-		)
-		else options.UpdatesPerSecond or DEFAULT_OPTIONS.UpdatesPerSecond
-	local nearDistanceFallback = options.NearUpdateDistance or math.max(config.FadeStartDistance * 0.5, 64)
-	local midDistanceFallback = options.MidUpdateDistance or math.max(config.FadeStartDistance, nearDistanceFallback)
-	local nearDistance = if sourceFolder
-		then readNumberAttribute(sourceFolder, "OceanNearUpdateDistance", nearDistanceFallback)
-		else nearDistanceFallback
-	local midDistance = if sourceFolder
-		then readNumberAttribute(sourceFolder, "OceanMidUpdateDistance", midDistanceFallback)
-		else midDistanceFallback
-	local nearRate = if sourceFolder
-		then readNumberAttribute(sourceFolder, "OceanNearUpdatesPerSecond", options.NearUpdatesPerSecond or globalRate)
-		else options.NearUpdatesPerSecond or globalRate
-	local midRate = if sourceFolder
-		then readNumberAttribute(
-			sourceFolder,
-			"OceanMidUpdatesPerSecond",
-			options.MidUpdatesPerSecond or DEFAULT_OPTIONS.MidUpdatesPerSecond
-		)
-		else options.MidUpdatesPerSecond or DEFAULT_OPTIONS.MidUpdatesPerSecond
-	local farRate = if sourceFolder
-		then readNumberAttribute(
-			sourceFolder,
-			"OceanFarUpdatesPerSecond",
-			options.FarUpdatesPerSecond or DEFAULT_OPTIONS.FarUpdatesPerSecond
-		)
-		else options.FarUpdatesPerSecond or DEFAULT_OPTIONS.FarUpdatesPerSecond
-
-	if distance <= nearDistance then
-		return math.max(nearRate, 0)
-	end
-
-	if distance <= midDistance then
-		return math.max(midRate, 0)
-	end
-
-	return math.max(farRate, 0)
 end
 
 local function cloneTileConfig(config: OceanTile.TileConfig): OceanTile.TileConfig
@@ -514,7 +473,6 @@ function WaterSystemClass:_RemoveTile(sourcePart: BasePart)
 	disconnectAll(self._TileConnections[sourcePart])
 	self._TileConnections[sourcePart] = nil
 	self._Pending[sourcePart] = nil
-	self._TileUpdateTimes[sourcePart] = nil
 	self._TileRenderLods[sourcePart] = nil
 	self._TileRenderLodChangeTimes[sourcePart] = nil
 end
@@ -813,6 +771,9 @@ function WaterSystemClass:_TryAddTile(instance: Instance)
 
 		self._Tiles[sourcePart] = tile
 		self._TileRenderLods[sourcePart] = renderLod
+		self._Time = now()
+		tile:WriteExternalState(self._Time, camera, true)
+		tile:StepLodBuffer()
 		self:_BindTileSource(sourcePart)
 	end)
 end
@@ -920,6 +881,7 @@ function WaterSystemClass:_AttachFolder(folder: Instance)
 		"OceanWaterColor",
 		"OceanWaterTintColor",
 		"OceanWaterColorGain",
+		"OceanWaterAlphaGain",
 		"OceanFoamColor",
 		"OceanWaterVertexAlpha",
 		"OceanFoamVertexAlpha",
@@ -990,6 +952,7 @@ function WaterSystemClass:_AttachFolder(folder: Instance)
 		"OceanFoamNoiseInfluence",
 		"OceanShallowWaveScale",
 		"OceanDeepWaveScale",
+		"OceanBeachWaveCurl",
 		"OceanShoreFoamStrength",
 		"OceanObstacleWaveDamping",
 		"OceanObstacleFoamStrength",
@@ -1004,6 +967,18 @@ function WaterSystemClass:_AttachFolder(folder: Instance)
 		"OceanWaveFoamAlphaBack",
 		"OceanWaveFoamAlphaTop",
 		"OceanWaveFoamAlphaGain",
+		"OceanFoamTrailStrength",
+		"OceanFoamTrailLength",
+		"OceanFoamTrailFeather",
+		"OceanCausticsEnabled",
+		"OceanCausticsColor",
+		"OceanCausticsStrength",
+		"OceanShallowCausticsStrength",
+		"OceanDeepCausticsStrength",
+		"OceanCausticsScale",
+		"OceanCausticsSpeed",
+		"OceanCausticsDepthFade",
+		"OceanCausticsVoronoiStrength",
 		"OceanShallowDepth",
 		"OceanLakeDepth",
 		"OceanOceanDepth",
@@ -1063,6 +1038,15 @@ function WaterSystemClass:_AttachFolder(folder: Instance)
 		"OceanSurfaceColorBake",
 		"OceanSurfaceColorMode",
 		"OceanRuntimeSurfaceColorEnabled",
+		"OceanWaterNormalEnabled",
+		"OceanWaterNormalResolution",
+		"OceanWaterNormalStrength",
+		"OceanWaterNormalScale",
+		"OceanWaterNormalSpeed",
+		"OceanWaterNormalUpdateInterval",
+		"OceanFresnelEnabled",
+		"OceanFresnelStrength",
+		"OceanFresnelPower",
 	}
 
 	for _, attributeName in ipairs(refreshAttributes) do
@@ -1152,26 +1136,46 @@ function WaterSystemClass:_AttachFolder(folder: Instance)
 	end)
 end
 
-function WaterSystemClass:_Step(deltaTime: number)
+function WaterSystemClass:_StepSourceStreaming(deltaTime: number)
 	local config = self._Config
 
 	if config == nil then
 		return
 	end
 
-	self._Time += deltaTime
-	local camera = workspace.CurrentCamera
 	local sourceFolder = self._SourceFolder
 
 	self._SourceScanAccumulator += deltaTime
 
 	if self._SourceScanAccumulator >= getLodScanInterval(sourceFolder, self._Options) then
 		self._SourceScanAccumulator = 0
-		self:_RefreshSourceTiles(camera)
+		self:_RefreshSourceTiles(self._Camera or workspace.CurrentCamera)
+	end
+end
+
+function WaterSystemClass:_StepExternalState(deltaTime: number)
+	local config = self._Config
+
+	if config == nil then
+		return
 	end
 
-	local cameraPosition = if camera then camera.CFrame.Position else nil
+	self._ExternalStateAccumulator += deltaTime
 
+	if self._ExternalStateAccumulator < EXTERNAL_STATE_INTERVAL then
+		return
+	end
+
+	self._ExternalStateAccumulator = 0
+	self._Time = now()
+
+	local camera = workspace.CurrentCamera
+	local sourceFolder = self._SourceFolder
+
+	self._Camera = camera
+	self._CameraPosition = if camera then camera.CFrame.Position else nil
+
+	local cameraPosition = self._CameraPosition
 
 	for sourcePart, tile in pairs(self._Tiles) do
 		if not isWaterPart(sourcePart, self._SourceFolder, self._Container) then
@@ -1200,13 +1204,6 @@ function WaterSystemClass:_Step(deltaTime: number)
 				self:_RemoveTile(sourcePart)
 				continue
 			end
-
-			local updateRate = getTileUpdateRate(oceanFolder, self._Options, tileConfig, distance)
-			local lastUpdate = self._TileUpdateTimes[sourcePart]
-
-			if updateRate > 0 and lastUpdate ~= nil and self._Time - lastUpdate < 1 / updateRate then
-				continue
-			end
 		end
 
 		local renderVisible = true
@@ -1224,8 +1221,103 @@ function WaterSystemClass:_Step(deltaTime: number)
 			renderVisible = isPartInCameraView(sourcePart, camera, padding)
 		end
 
-		self._TileUpdateTimes[sourcePart] = self._Time
-		tile:Update(self._Time, camera, renderVisible)
+		tile:WriteExternalState(self._Time, camera, renderVisible)
+	end
+end
+
+function WaterSystemClass:_StepLodBuffers(deltaTime: number)
+	local config = self._Config
+
+	if config == nil then
+		return
+	end
+
+	local interval = getLodScanInterval(self._SourceFolder, self._Options)
+
+	self._LodBufferAccumulator += deltaTime
+
+	if self._LodBufferAccumulator < interval then
+		return
+	end
+
+	self._LodBufferAccumulator = 0
+	self._Time = now()
+
+	for _, tile in pairs(self._Tiles) do
+		tile:StepLodBuffer()
+	end
+end
+
+function WaterSystemClass:_StepWaveBuffers(deltaTime: number)
+	local config = self._Config
+
+	if config == nil then
+		return
+	end
+
+	self._WaveBufferAccumulator += deltaTime
+
+	if self._WaveBufferAccumulator < WAVE_BUFFER_INTERVAL then
+		return
+	end
+
+	self._WaveBufferAccumulator = 0
+	self._Time = now()
+
+	for _, tile in pairs(self._Tiles) do
+		tile:StepWaveBuffer(self._Time)
+	end
+end
+
+function WaterSystemClass:_StepSurfaceBuffers(deltaTime: number)
+	local config = self._Config
+
+	if config == nil then
+		return
+	end
+
+	self._SurfaceBufferAccumulator += deltaTime
+
+	if self._SurfaceBufferAccumulator < SURFACE_BUFFER_INTERVAL then
+		return
+	end
+
+	self._SurfaceBufferAccumulator = 0
+	self._Time = now()
+
+	for _, tile in pairs(self._Tiles) do
+		tile:StepSurfaceBuffer(self._Time)
+	end
+end
+
+function WaterSystemClass:_StepEffectBuffers(deltaTime: number)
+	local config = self._Config
+
+	if config == nil then
+		return
+	end
+
+	self._EffectBufferAccumulator += deltaTime
+
+	if self._EffectBufferAccumulator < EFFECT_BUFFER_INTERVAL then
+		return
+	end
+
+	self._EffectBufferAccumulator = 0
+	self._Time = now()
+
+	for _, tile in pairs(self._Tiles) do
+		tile:StepEffectBuffer(self._Time)
+	end
+end
+
+function WaterSystemClass:_StepRender(_deltaTime: number)
+	if self._Config == nil then
+		return
+	end
+
+	for _, tile in pairs(self._Tiles) do
+		tile:ApplyRenderBuffer()
 	end
 end
 
@@ -1236,6 +1328,12 @@ function WaterSystemClass:Start()
 
 	self._Running = true
 	activeSystem = self
+	self._ExternalStateAccumulator = EXTERNAL_STATE_INTERVAL
+	self._LodBufferAccumulator = math.huge
+	self._WaveBufferAccumulator = WAVE_BUFFER_INTERVAL
+	self._SurfaceBufferAccumulator = SURFACE_BUFFER_INTERVAL
+	self._EffectBufferAccumulator = EFFECT_BUFFER_INTERVAL
+	self._UnderwaterAccumulator = 1 / 30
 
 	if self._Options.RuntimePanel ~= false and self._Panel == nil then
 		self._Panel = RuntimePanel.new(self)
@@ -1267,7 +1365,7 @@ function WaterSystemClass:Start()
 	end
 
 	self._RenderConnection = RunService.RenderStepped:Connect(function(deltaTime)
-		self:_Step(deltaTime)
+		self:_StepRender(deltaTime)
 	end)
 
 	RuntimeLoops.start(self)
@@ -1334,12 +1432,21 @@ function WaterSystemClass:Stop()
 	self._SourceFolder = nil
 	self._Config = nil
 	self._Spectrum = nil
+	self._Camera = nil
+	self._CameraPosition = nil
 	self._Accumulator = 0
 	self._SourceScanAccumulator = 0
+	self._ExternalStateAccumulator = 0
+	self._LodBufferAccumulator = 0
+	self._WaveBufferAccumulator = 0
+	self._SurfaceBufferAccumulator = 0
+	self._EffectBufferAccumulator = 0
+	self._UnderwaterAccumulator = 0
 	self._PhysicalAccumulator = 0
 	self._BuoyancyAccumulator = 0
 	self._PhysicalTime = 0
 	self._BuoyancyTime = 0
+	self._PlayerSurfaceAccumulator = 0
 	self._UnderwaterTime = 0
 	self._PlayerWasSwimming = false
 	self._UnderwaterDepth = 0
@@ -1450,7 +1557,6 @@ function WaterSystem.new(options: WaterSystemOptions?): WaterSystem
 		_TileRenderLods = {},
 		_TileRenderLodChangeTimes = {},
 		_TileConnections = {},
-		_TileUpdateTimes = {},
 		_OceanConfigs = {},
 		_OceanSpectra = {},
 		_BakeActor = nil,
@@ -1462,11 +1568,20 @@ function WaterSystem.new(options: WaterSystemOptions?): WaterSystem
 		_Time = 0,
 		_Accumulator = 0,
 		_SourceScanAccumulator = 0,
+		_Camera = nil,
+		_CameraPosition = nil,
+		_ExternalStateAccumulator = 0,
+		_LodBufferAccumulator = 0,
+		_WaveBufferAccumulator = 0,
+		_SurfaceBufferAccumulator = 0,
+		_EffectBufferAccumulator = 0,
+		_UnderwaterAccumulator = 0,
 		_PhysicalAccumulator = 0,
 		_PhysicalTime = 0,
 		_PhysicalStates = {},
 		_BuoyancyAccumulator = 0,
 		_BuoyancyTime = 0,
+		_PlayerSurfaceAccumulator = 0,
 		_UnderwaterTime = 0,
 		_PlayerSwimAnimationState = nil,
 		_PlayerSwimRoot = nil,
@@ -1484,6 +1599,12 @@ function WaterSystem.new(options: WaterSystemOptions?): WaterSystem
 		_OriginalDepthOfFieldNearIntensity = 0,
 		_OriginalDepthOfFieldFarIntensity = 0,
 		_RenderConnection = nil,
+		_ExternalStateConnection = nil,
+		_SourceStreamingConnection = nil,
+		_LodBufferConnection = nil,
+		_WaveBufferConnection = nil,
+		_SurfaceBufferConnection = nil,
+		_EffectBufferConnection = nil,
 		_BuoyancyConnection = nil,
 		_PhysicalConnection = nil,
 		_PlayerSurfaceConnection = nil,

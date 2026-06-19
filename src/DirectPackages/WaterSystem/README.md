@@ -89,6 +89,7 @@ O sistema cria um painel runtime estilo Godot/ImGui quando o cliente inicia.
 - `OceanFallbackDepth` number: profundidade usada quando o raycast nao acha fundo. Padrao `180`.
 - `OceanShallowWaveScale` number: escala de onda em agua rasa/praia. Padrao `0.12` para manter ondas amortecidas, mas ainda visiveis onde o `DepthMap` raycastado indica pouca profundidade.
 - `OceanDeepWaveScale` number: escala de onda em agua profunda. Padrao `1.08`.
+- `OceanBeachWaveCurl` number: curva lateral aplicada a ondas rasas usando o gradiente do `DepthMap`, para formar linhas de quebra mais sinuosas tipo praia. Padrao `0.78`.
 - `OceanShallowDepth` number: ate onde a agua e tratada como rasa. Padrao `10`.
 - `OceanLakeDepth` number: profundidade onde a cascade media/lago domina. Padrao `42`.
 - `OceanOceanDepth` number: profundidade onde a cascade grande/oceano domina. Padrao `96`.
@@ -124,13 +125,24 @@ O sistema cria um painel runtime estilo Godot/ImGui quando o cliente inicia.
 - `OceanFoamBufferResolution` number: resolucao do buffer de superficie por tile. Padrao `48`.
 - `OceanFoamBufferDecay` number: dissipacao por segundo aplicada ao foam persistente de praia, obstaculo e interacao. Padrao `0.72`.
 - `OceanFoamBufferGrowth` number: velocidade com que fontes continuas escrevem no campo de superficie. Padrao `7.5`.
-- `OceanShoreFoamStrength` number: foam gerado por agua rasa/praia, separado do foam de crista das ondas grandes. Padrao `0.08`.
+- `OceanShoreFoamStrength` number: foam gerado por agua rasa/praia, usando a mesma profundidade raycastada que deixa a agua mais verde no raso, separado do foam de crista das ondas grandes. Padrao `0.42`.
+- `OceanFoamTrailStrength` number: intensidade do rastro fino de espuma em agua rasa. E composto como camada separada, abaixo da crista/quebra. Padrao `0.34`.
+- `OceanFoamTrailLength` number: distancia normalizada do rastro da praia para dentro da agua rasa; valores maiores espalham mais wash/lace. Padrao `2.4`.
+- `OceanFoamTrailFeather` number: suavidade da borda do rastro de espuma. Padrao `0.58`.
 - `OceanCrestFoamAlphaBack` number: alpha do foam de crista quando a mascara fina de crista e `0`. Padrao `0`.
 - `OceanCrestFoamAlphaTop` number: alpha do foam de crista quando a mascara fina de crista e `1`. Padrao `1`.
 - `OceanCrestFoamAlphaGain` number: ganho do gradiente de alpha do foam de crista. A mascara comeca perto do topo da onda e valores maiores deixam a espuma menos transparente e mais acumulada na crista, separado do gradiente verde da agua. Padrao `1`.
 - `OceanWaveFoamAlphaBack` number: alpha inicial da camada larga de foam no corpo da onda. Padrao `0`.
 - `OceanWaveFoamAlphaTop` number: alpha maximo da camada larga de foam acumulada perto do topo da onda. Padrao `0.42`.
 - `OceanWaveFoamAlphaGain` number: ganho da camada larga de foam de ondas; menor deixa o desenho mais suave, maior aproxima do topo. Padrao `0.78`.
+- `OceanCausticsEnabled` boolean: ativa caustics procedurais na cor da superficie. Padrao `true`.
+- `OceanCausticsStrength` number: intensidade global do efeito. Padrao `0.32`.
+- `OceanShallowCausticsStrength` number: linhas de caustics visiveis em agua rasa/praia. Padrao `1`.
+- `OceanDeepCausticsStrength` number: brilho residual em oceano profundo. Padrao `0.13`.
+- `OceanCausticsScale` number: escala em studs do pattern. Padrao `18`.
+- `OceanCausticsSpeed` number: velocidade da animacao procedural. Padrao `0.42`.
+- `OceanCausticsDepthFade` number: quao rapido as caustics fortes somem com a profundidade normalizada. Padrao `0.42`.
+- `OceanCausticsVoronoiStrength` number: quanto Voronoi discreto entra no oceano profundo, misturado a ruido suave. Padrao `0.18`.
 - `OceanPhysicalInteractionEnabled` boolean: ativa interacao automatica com partes fisicas. Padrao `true`.
 - `OceanPlayerInteractionEnabled` boolean: usa apenas `HumanoidRootPart` como caixa do player. Padrao `true`.
 - `OceanBuoyancyEnabled` boolean: ativa empuxo automatico em Parts nao anchored, separado do player. Padrao `true`.
@@ -177,6 +189,7 @@ O sistema cria um painel runtime estilo Godot/ImGui quando o cliente inicia.
 - `OceanFoamAmount` number: intensidade de espuma. Padrao `5`.
 - `OceanWaterColor` Color3: `ColorBack`, cor da agua no ponto `0` do gradiente por tamanho de onda.
 - `OceanWaterTintColor` Color3: `ColorTop`, cor da agua no ponto `1` do gradiente por tamanho de onda. Padrao `Color3.fromRGB(31, 143, 128)`.
+- `OceanWaterAlphaGain` number: ganho do alpha por profundidade; valores maiores deixam a agua ficar opaca mais cedo ao sair do raso, valores menores mantem a borda rasa mais transparente. Padrao `1`.
 - `OceanFoamColor` Color3: cor de espuma.
 - `OceanSurfaceColorBake` boolean: `true` pre-bakeia todos os frames de cor/foam em RGBA e, em runtime, apenas aplica o frame pronto nos vertices ou no `EditableImage`; `false` mantem o caminho antigo que calcula cor/foam por frame. O alpha da agua vem da profundidade raycastada pelo `DepthMap`. Padrao `true`.
 - `OceanSurfaceColorMode` string: `"SurfaceAppearance"`, `"FoamSurfaceAppearance"` ou `"PaintVertices"`. `PaintVertices` pinta vertices e tambem cria um `SurfaceAppearance` vazio para o pipeline de render do Roblox; os modos com textura criam um `EditableImage` na resolucao de `OceanFoamTextureResolution`. Padrao `"PaintVertices"`.
@@ -188,6 +201,15 @@ O sistema cria um painel runtime estilo Godot/ImGui quando o cliente inicia.
 - `OceanRuntimeSurfaceColorEnabled` boolean: compatibilidade antiga; quando definido nas opcoes, `true` equivale a `OceanSurfaceColorBake=false`.
 - `OceanTransparency` number: transparencia do `MeshPart`; `OceanWaterVertexAlpha` controla o alpha das cores do `EditableMesh`.
 - `OceanReflectance` number: reflexo do MeshPart.
+- `OceanWaterNormalEnabled` boolean: ativa um `EditableImage` animado como `NormalMap` dentro do `SurfaceAppearance`. Padrao `true`.
+- `OceanWaterNormalResolution` number: resolucao do `EditableImage` de normal. Padrao `64`.
+- `OceanWaterNormalStrength` number: intensidade da perturbacao de normal procedural/ondas. Padrao `0.9`.
+- `OceanWaterNormalScale` number: escala em studs do detalhe de normal animado. Padrao `18`.
+- `OceanWaterNormalSpeed` number: velocidade do detalhe de normal. Padrao `0.72`.
+- `OceanWaterNormalUpdateInterval` number: intervalo alvo usado para pre-bakear o loop RGB da normal; em runtime o sistema apenas copia o frame pronto para o `NormalMap`. O bake e limitado a 240 frames por tile. Padrao `0.05`.
+- `OceanFresnelEnabled` boolean: aplica alpha Fresnel por vertice usando `1 - abs(Normal:Dot(ViewDir))`. Padrao `true`.
+- `OceanFresnelStrength` number: quanto o Fresnel multiplica o alpha da agua/foam pintado nos vertices. Padrao `0.72`.
+- `OceanFresnelPower` number: curva do Fresnel; valores maiores seguram mais alpha ate a normal ficar bem lateral. Padrao `1.1`.
 - `OceanHideSourceParts` boolean: esconde localmente os Parts fonte. Padrao `true`.
 - `OceanEnableSeaSpray` boolean: ativa/desativa particulas simples de spray quando `OceanSeaSprayTextureId` esta configurado.
 - `OceanCpuReadback` boolean: controle reservado no painel runtime para manter paridade visual com o painel Godot.
@@ -219,7 +241,7 @@ Neste port:
 - A malha fica com `MeshPart.Transparency = 0.02`; a agua e a espuma usam alpha por vertice/cor via `EditableMesh:AddColor` ou via `SurfaceAppearance`. Por padrao a agua chega a alpha `0.5` em profundidade cheia e fica quase invisivel em agua rasa usando o mesmo `DepthMap` raycastado que escala as ondas. A espuma usa alpha proprio de crista. Quando as cores por vertice estao disponiveis, o `MeshPart.Color` fica branco para nao tingir a espuma.
 - A cor do foam vem sempre de `OceanFoamColor`; o gradiente verde da agua/tint nao entra na cor da espuma. `OceanFoamTextureTransparency` so reduz foam localizado, enquanto a crista usa `OceanCrestFoamAlphaBack/Top/Gain`.
 - `OceanSurfaceColorBake=true` usa o min/max do loop bakeado de alturas para normalizar a onda durante o bake RGBA. Depois disso o runtime nao reamostra cor, espuma ou profundidade para a superficie visual.
-- `SurfaceAppearance` escreve agua+foam no `ColorMap`; `FoamSurfaceAppearance` escreve apenas o foam no `ColorMap` e deixa a agua nos vertices; `PaintVertices` cria um `SurfaceAppearance` vazio e deixa a cor nos vertices.
+- `SurfaceAppearance` escreve agua+foam no `ColorMap`; `FoamSurfaceAppearance` escreve apenas o foam no `ColorMap` e deixa a agua nos vertices; `PaintVertices` cria um `SurfaceAppearance` para o pipeline e deixa a cor nos vertices. Quando `OceanWaterNormalEnabled=true`, esse mesmo `SurfaceAppearance` tambem recebe um `NormalMap` animado por `EditableImage`.
 - `OceanSeaSprayTextureId` ativa particulas de spray usando a textura enviada ao Roblox.
 
 ## Atributos por cascata

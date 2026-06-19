@@ -12,6 +12,7 @@ type PlayerSwimAnimationState = Types.PlayerSwimAnimationState
 local DEFAULT_OPTIONS = Defaults.DEFAULT_OPTIONS :: any
 local readFolderBoolean = AttributeUtils.readFolderBoolean
 local readFolderNumber = AttributeUtils.readFolderNumber
+local PLAYER_SURFACE_INTERVAL = 1 / 30
 
 local PlayerSurfaceController = {}
 
@@ -297,6 +298,16 @@ function PlayerSurfaceController.setPlayerSwimAnimation(
 end
 
 function PlayerSurfaceController.step(self: any, deltaTime: number)
+	self._PlayerSurfaceAccumulator = (self._PlayerSurfaceAccumulator or 0) + deltaTime
+
+	if self._PlayerSurfaceAccumulator < PLAYER_SURFACE_INTERVAL then
+		return
+	end
+
+	local stepDelta = self._PlayerSurfaceAccumulator
+	self._PlayerSurfaceAccumulator = 0
+	deltaTime = stepDelta
+
 	local sourceFolder = self._SourceFolder
 
 	if

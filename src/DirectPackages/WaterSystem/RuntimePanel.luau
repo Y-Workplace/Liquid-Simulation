@@ -70,6 +70,14 @@ local FOAM_SWATCHES = {
 	Color3.fromRGB(180, 180, 170),
 }
 
+local CAUSTICS_SWATCHES = {
+	Color3.fromRGB(182, 238, 229),
+	Color3.fromRGB(220, 255, 241),
+	Color3.fromRGB(154, 223, 239),
+	Color3.fromRGB(196, 230, 255),
+	Color3.fromRGB(232, 244, 216),
+}
+
 local WAVE_RESOLUTION_OPTIONS = {
 	{ label = "16x16", value = 16 },
 	{ label = "28x28", value = 28 },
@@ -662,6 +670,7 @@ function RuntimePanelClass:_Build()
 	addNumericSlider(self, body, "Ocean Depth", "OceanOceanDepth", 96, 4, 220, 1, false)
 	addNumericSlider(self, body, "Shallow Waves", "OceanShallowWaveScale", 0.12, 0, 2, 2, false)
 	addNumericSlider(self, body, "Deep Waves", "OceanDeepWaveScale", 1.08, 0, 3, 2, false)
+	addNumericSlider(self, body, "Beach Curl", "OceanBeachWaveCurl", 0.78, 0, 2, 2, false)
 	addNumericSlider(self, body, "Bake Frames", "OceanWaveLoopFrames", 48, 8, 160, 0, false)
 	addNumericSlider(self, body, "Bake Seconds", "OceanWaveLoopDuration", 18, 2, 60, 0, false)
 	addNumericSlider(self, body, "Far Wave Detail", "OceanFarWaveDetail", 0.42, 0.05, 1, 2, false)
@@ -698,7 +707,10 @@ function RuntimePanelClass:_Build()
 	addNumericSlider(self, body, "Foam Growth", "OceanFoamBufferGrowth", 7.5, 0, 30, 2, false)
 	addTextBox(self, body, "Obstacle Root", "OceanObstacleRootName", "WaterObstacles", true)
 	addCheckbox(self, body, "Bake Anchored", "OceanBakeAnchoredObstacles", true, true)
-	addNumericSlider(self, body, "Shore Foam", "OceanShoreFoamStrength", 0.08, 0, 3, 2, false)
+	addNumericSlider(self, body, "Shore Foam", "OceanShoreFoamStrength", 0.42, 0, 3, 2, false)
+	addNumericSlider(self, body, "Foam Trail", "OceanFoamTrailStrength", 0.34, 0, 2, 2, false)
+	addNumericSlider(self, body, "Trail Length", "OceanFoamTrailLength", 2.4, 0.1, 5, 2, false)
+	addNumericSlider(self, body, "Trail Feather", "OceanFoamTrailFeather", 0.58, 0, 1, 2, false)
 	addNumericSlider(self, body, "Obstacle Foam", "OceanObstacleFoamStrength", 0.9, 0, 3, 2, false)
 	addNumericSlider(self, body, "Crest Foam Alpha Back", "OceanCrestFoamAlphaBack", 0, 0, 1, 2, false)
 	addNumericSlider(self, body, "Crest Foam Alpha Top", "OceanCrestFoamAlphaTop", 1, 0, 1, 2, false)
@@ -743,8 +755,18 @@ function RuntimePanelClass:_Build()
 	addColorCycler(self, body, "Water Color", "OceanWaterColor", COLOR_SWATCHES, Color3.fromRGB(19, 64, 76))
 	addColorCycler(self, body, "Tint Color", "OceanWaterTintColor", COLOR_SWATCHES, Color3.fromRGB(31, 143, 128))
 	addNumericSlider(self, body, "Water Color Gain", "OceanWaterColorGain", 0.5, 0, 1, 2, false)
+	addNumericSlider(self, body, "Water Alpha Gain", "OceanWaterAlphaGain", 1, 0, 4, 2, false)
 	addColorCycler(self, body, "Foam Color", "OceanFoamColor", FOAM_SWATCHES, Color3.fromRGB(214, 210, 198))
 	addNumericSlider(self, body, "Water Vertex Alpha", "OceanWaterVertexAlpha", 0.5, 0, 1, 3, true)
+	addCheckbox(self, body, "Water Normal", "OceanWaterNormalEnabled", true, true)
+	addNumericSlider(self, body, "Normal Res", "OceanWaterNormalResolution", 64, 16, 512, 0, true)
+	addNumericSlider(self, body, "Normal Strength", "OceanWaterNormalStrength", 0.9, 0, 3, 2, false)
+	addNumericSlider(self, body, "Normal Scale", "OceanWaterNormalScale", 18, 1, 96, 1, false)
+	addNumericSlider(self, body, "Normal Speed", "OceanWaterNormalSpeed", 0.72, 0, 3, 2, false)
+	addNumericSlider(self, body, "Normal Interval", "OceanWaterNormalUpdateInterval", 0.05, 0, 0.5, 2, false)
+	addCheckbox(self, body, "Fresnel", "OceanFresnelEnabled", true, false)
+	addNumericSlider(self, body, "Fresnel Strength", "OceanFresnelStrength", 0.72, 0, 1, 2, false)
+	addNumericSlider(self, body, "Fresnel Power", "OceanFresnelPower", 1.1, 0.1, 4, 2, false)
 	addNumericSlider(self, body, "Foam Vertex Alpha", "OceanFoamVertexAlpha", 1, 0, 1, 3, true)
 	addNumericSlider(self, body, "Foam Vertex Boost", "OceanFoamVertexBoost", 1.35, 0, 4, 3, false)
 	addNumericSlider(self, body, "Vertex Pattern", "OceanFoamNoiseInfluence", 0.72, 0, 1, 3, false)
@@ -755,6 +777,16 @@ function RuntimePanelClass:_Build()
 	addNumericSlider(self, body, "Foam Image FPS", "OceanFoamTextureUpdateInterval", 0.08, 0, 0.5, 2, false)
 	addNumericSlider(self, body, "Foam Layer Fade", "OceanFoamTextureTransparency", 0, 0, 1, 3, false)
 	addNumericSlider(self, body, "Vertex Pattern Tile", "OceanFoamTextureStudsPerTile", 18, 1, 96, 0, false)
+	section(body, "Caustics")
+	addCheckbox(self, body, "Caustics", "OceanCausticsEnabled", true, false)
+	addColorCycler(self, body, "Caustics Color", "OceanCausticsColor", CAUSTICS_SWATCHES, Color3.fromRGB(182, 238, 229))
+	addNumericSlider(self, body, "Caustics Strength", "OceanCausticsStrength", 0.32, 0, 2, 2, false)
+	addNumericSlider(self, body, "Shallow Caustics", "OceanShallowCausticsStrength", 1, 0, 2, 2, false)
+	addNumericSlider(self, body, "Deep Caustics", "OceanDeepCausticsStrength", 0.13, 0, 1, 2, false)
+	addNumericSlider(self, body, "Caustics Scale", "OceanCausticsScale", 18, 2, 80, 1, false)
+	addNumericSlider(self, body, "Caustics Speed", "OceanCausticsSpeed", 0.42, 0, 2, 2, false)
+	addNumericSlider(self, body, "Caustics Depth Fade", "OceanCausticsDepthFade", 0.42, 0.02, 1, 2, false)
+	addNumericSlider(self, body, "Deep Voronoi", "OceanCausticsVoronoiStrength", 0.18, 0, 1, 2, false)
 	addCheckbox(self, body, "Underwater DOF", "OceanUnderwaterDepthOfFieldEnabled", true, false)
 	addNumericSlider(self, body, "DOF Focus", "OceanUnderwaterDepthOfFieldFocusDistance", 18, 1, 80, 0, false)
 	addNumericSlider(self, body, "DOF Radius", "OceanUnderwaterDepthOfFieldInFocusRadius", 14, 1, 80, 0, false)

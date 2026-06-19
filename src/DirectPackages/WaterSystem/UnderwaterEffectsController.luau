@@ -8,6 +8,7 @@ local AttributeUtils = require(script.Parent.AttributeUtils)
 local DEFAULT_OPTIONS = Defaults.DEFAULT_OPTIONS :: any
 local readFolderBoolean = AttributeUtils.readFolderBoolean
 local readFolderNumber = AttributeUtils.readFolderNumber
+local UNDERWATER_INTERVAL = 1 / 30
 
 local UnderwaterEffectsController = {}
 
@@ -125,6 +126,16 @@ function UnderwaterEffectsController.updateCameraDrops(self: any, camera: Camera
 end
 
 function UnderwaterEffectsController.step(self: any, deltaTime: number)
+	self._UnderwaterAccumulator = (self._UnderwaterAccumulator or 0) + deltaTime
+
+	if self._UnderwaterAccumulator < UNDERWATER_INTERVAL then
+		return
+	end
+
+	local stepDelta = self._UnderwaterAccumulator
+	self._UnderwaterAccumulator = 0
+	deltaTime = stepDelta
+
 	local camera = workspace.CurrentCamera
 
 	if camera == nil then

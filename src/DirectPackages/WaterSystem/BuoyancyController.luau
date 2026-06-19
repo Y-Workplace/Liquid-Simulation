@@ -70,8 +70,8 @@ function BuoyancyController.step(self: any, deltaTime: number)
 
 	local visited: { [BasePart]: boolean } = {}
 	local tracked = 0
-	local camera = workspace.CurrentCamera
-	local cameraPosition = if camera ~= nil then camera.CFrame.Position else nil
+	local camera = self._Camera or workspace.CurrentCamera
+	local cameraPosition = self._CameraPosition or (if camera ~= nil then camera.CFrame.Position else nil)
 
 	for sourcePart, tile in pairs(self._Tiles) do
 		if tracked >= maxTracked then

@@ -8,6 +8,7 @@ export type SurfaceColorConfig = {
 	WaterColorBack: Color3,
 	WaterColorTop: Color3,
 	WaterColorGain: number,
+	WaterAlphaGain: number,
 	WaterAlphaBack: number,
 	WaterAlphaTop: number,
 	FoamColor: Color3,
@@ -25,6 +26,9 @@ export type SurfaceSample = {
 	WaterAlpha: number,
 	FoamColor: Color3,
 	FoamAlpha: number,
+	CrestFoamAlpha: number,
+	WaveFoamAlpha: number,
+	ExtraFoamAlpha: number,
 	FinalColor: Color3,
 	FinalAlpha: number,
 }
@@ -105,7 +109,8 @@ function WaterSurfaceColor.SampleWater(
 ): WaterSample
 	local heightAlpha = math.clamp(normalizedHeight, 0, 1)
 	local waterPosition = scaledGradientPosition(heightAlpha, config.WaterColorGain)
-	local waterAlphaPosition = math.clamp(depthAlpha or 1, 0, 1)
+	local waterAlphaPosition = scaledGradientPosition(depthAlpha or 1, config.WaterAlphaGain)
+
 	local waterColor = lerpColor(config.WaterColorBack, config.WaterColorTop, waterPosition)
 	local waterAlpha = math.clamp(lerpNumber(config.WaterAlphaBack, config.WaterAlphaTop, waterAlphaPosition), 0, 1)
 
@@ -120,6 +125,19 @@ function WaterSurfaceColor.SampleFoam(
 	normalizedHeight: number,
 	extraFoamAlpha: number?
 ): FoamSample
+	local crestFoamAlpha, waveFoamAlpha = WaterSurfaceColor.SampleFoamLayers(config, normalizedHeight)
+	local foamAlpha = math.clamp((math.max(crestFoamAlpha, waveFoamAlpha, extraFoamAlpha or 0)), 0, 1)
+
+	return {
+		Color = config.FoamColor,
+		Alpha = foamAlpha,
+	}
+end
+
+function WaterSurfaceColor.SampleFoamLayers(
+	config: SurfaceColorConfig,
+	normalizedHeight: number
+): (number, number)
 	local heightAlpha = math.clamp(normalizedHeight, 0, 1)
 	local foamPosition = crestFoamGradientPosition(heightAlpha, config.CrestFoamAlphaGain)
 	local crestFoamAlpha =
@@ -127,12 +145,8 @@ function WaterSurfaceColor.SampleFoam(
 	local waveFoamPosition = waveFoamGradientPosition(heightAlpha, config.WaveFoamAlphaGain)
 	local waveFoamAlpha =
 		math.clamp(lerpNumber(config.WaveFoamAlphaBack, config.WaveFoamAlphaTop, waveFoamPosition), 0, 1)
-	local foamAlpha = math.clamp((math.max(crestFoamAlpha, waveFoamAlpha, extraFoamAlpha or 0)), 0, 1)
 
-	return {
-		Color = config.FoamColor,
-		Alpha = foamAlpha,
-	}
+	return crestFoamAlpha, waveFoamAlpha
 end
 
 function WaterSurfaceColor.Sample(
@@ -144,6 +158,7 @@ function WaterSurfaceColor.Sample(
 	local heightAlpha = math.clamp(normalizedHeight, 0, 1)
 	local water = WaterSurfaceColor.SampleWater(config, heightAlpha, depthAlpha)
 	local foam = WaterSurfaceColor.SampleFoam(config, heightAlpha, extraFoamAlpha)
+	local crestFoamAlpha, waveFoamAlpha = WaterSurfaceColor.SampleFoamLayers(config, heightAlpha)
 	local waterColor = water.Color
 	local waterAlpha = water.Alpha
 	local foamAlpha = foam.Alpha
@@ -156,6 +171,9 @@ function WaterSurfaceColor.Sample(
 		WaterAlpha = waterAlpha,
 		FoamColor = config.FoamColor,
 		FoamAlpha = foamAlpha,
+		CrestFoamAlpha = crestFoamAlpha,
+		WaveFoamAlpha = waveFoamAlpha,
+		ExtraFoamAlpha = math.clamp(extraFoamAlpha or 0, 0, 1),
 		FinalColor = finalColor,
 		FinalAlpha = finalAlpha,
 	}
@@ -167,6 +185,7 @@ function WaterSurfaceColor.BuildConfig(options: {
 	WaterColorBack: Color3,
 	WaterColorTop: Color3,
 	WaterColorGain: number,
+	WaterAlphaGain: number,
 	WaterVertexAlpha: number,
 	FoamColor: Color3,
 	CrestFoamAlphaBack: number,
@@ -182,6 +201,7 @@ function WaterSurfaceColor.BuildConfig(options: {
 		WaterColorBack = options.WaterColorBack,
 		WaterColorTop = options.WaterColorTop,
 		WaterColorGain = options.WaterColorGain,
+		WaterAlphaGain = options.WaterAlphaGain,
 		WaterAlphaBack = 0,
 		WaterAlphaTop = options.WaterVertexAlpha,
 		FoamColor = options.FoamColor,

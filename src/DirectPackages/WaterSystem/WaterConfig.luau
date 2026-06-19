@@ -89,6 +89,14 @@ local function resolveBooleanOption(value: boolean?, defaultValue: boolean): boo
 	return defaultValue
 end
 
+local function resolveNumberOption(value: number?, defaultValue: number): number
+	if value ~= nil then
+		return value
+	end
+
+	return defaultValue
+end
+
 local function resolveConfig(folder: Instance, options: WaterSystemOptions): OceanTile.TileConfig
 	local lod0Radius =
 		math.max(readNumberAttribute(folder, "OceanLod0Radius", options.Lod0Radius or DEFAULT_OPTIONS.Lod0Radius), 0)
@@ -318,6 +326,11 @@ local function resolveConfig(folder: Instance, options: WaterSystemOptions): Oce
 			0,
 			3
 		),
+		BeachWaveCurl = math.clamp(
+			readNumberAttribute(folder, "OceanBeachWaveCurl", options.BeachWaveCurl or DEFAULT_OPTIONS.BeachWaveCurl),
+			0,
+			2
+		),
 		ShoreFoamStrength = math.clamp(
 			readNumberAttribute(
 				folder,
@@ -477,6 +490,32 @@ local function resolveConfig(folder: Instance, options: WaterSystemOptions): Oce
 			0,
 			1
 		),
+		FoamTrailStrength = math.clamp(
+			readNumberAttribute(
+				folder,
+				"OceanFoamTrailStrength",
+				options.FoamTrailStrength or DEFAULT_OPTIONS.FoamTrailStrength
+			),
+			0,
+			2
+		),
+		FoamTrailLength = math.max(
+			readNumberAttribute(
+				folder,
+				"OceanFoamTrailLength",
+				options.FoamTrailLength or DEFAULT_OPTIONS.FoamTrailLength
+			),
+			0.01
+		),
+		FoamTrailFeather = math.clamp(
+			readNumberAttribute(
+				folder,
+				"OceanFoamTrailFeather",
+				options.FoamTrailFeather or DEFAULT_OPTIONS.FoamTrailFeather
+			),
+			0,
+			1
+		),
 		ShallowDepth = math.max(
 			readNumberAttribute(folder, "OceanShallowDepth", options.ShallowDepth or DEFAULT_OPTIONS.ShallowDepth),
 			0
@@ -584,6 +623,10 @@ local function resolveConfig(folder: Instance, options: WaterSystemOptions): Oce
 			0,
 			1
 		),
+		WaterAlphaGain = math.max(
+			readNumberAttribute(folder, "OceanWaterAlphaGain", options.WaterAlphaGain or DEFAULT_OPTIONS.WaterAlphaGain),
+			0
+		),
 		FoamColor = readColorAttribute(folder, "OceanFoamColor", options.FoamColor or DEFAULT_OPTIONS.FoamColor),
 		SurfaceColorBake = surfaceColorBake,
 		SurfaceColorMode = surfaceColorMode,
@@ -600,6 +643,77 @@ local function resolveConfig(folder: Instance, options: WaterSystemOptions): Oce
 			),
 			0,
 			1
+		),
+		WaterNormalEnabled = readBooleanAttribute(
+			folder,
+			"OceanWaterNormalEnabled",
+			resolveBooleanOption(options.WaterNormalEnabled, DEFAULT_OPTIONS.WaterNormalEnabled)
+		),
+		WaterNormalResolution = math.clamp(
+			math.round(
+				readNumberAttribute(
+					folder,
+					"OceanWaterNormalResolution",
+					resolveNumberOption(options.WaterNormalResolution, DEFAULT_OPTIONS.WaterNormalResolution)
+				)
+			),
+			16,
+			512
+		),
+		WaterNormalStrength = math.clamp(
+			readNumberAttribute(
+				folder,
+				"OceanWaterNormalStrength",
+				resolveNumberOption(options.WaterNormalStrength, DEFAULT_OPTIONS.WaterNormalStrength)
+			),
+			0,
+			3
+		),
+		WaterNormalScale = math.max(
+			readNumberAttribute(
+				folder,
+				"OceanWaterNormalScale",
+				resolveNumberOption(options.WaterNormalScale, DEFAULT_OPTIONS.WaterNormalScale)
+			),
+			0.5
+		),
+		WaterNormalSpeed = math.max(
+			readNumberAttribute(
+				folder,
+				"OceanWaterNormalSpeed",
+				resolveNumberOption(options.WaterNormalSpeed, DEFAULT_OPTIONS.WaterNormalSpeed)
+			),
+			0
+		),
+		WaterNormalUpdateInterval = math.max(
+			readNumberAttribute(
+				folder,
+				"OceanWaterNormalUpdateInterval",
+				resolveNumberOption(options.WaterNormalUpdateInterval, DEFAULT_OPTIONS.WaterNormalUpdateInterval)
+			),
+			0
+		),
+		FresnelEnabled = readBooleanAttribute(
+			folder,
+			"OceanFresnelEnabled",
+			resolveBooleanOption(options.FresnelEnabled, DEFAULT_OPTIONS.FresnelEnabled)
+		),
+		FresnelStrength = math.clamp(
+			readNumberAttribute(
+				folder,
+				"OceanFresnelStrength",
+				resolveNumberOption(options.FresnelStrength, DEFAULT_OPTIONS.FresnelStrength)
+			),
+			0,
+			1
+		),
+		FresnelPower = math.max(
+			readNumberAttribute(
+				folder,
+				"OceanFresnelPower",
+				resolveNumberOption(options.FresnelPower, DEFAULT_OPTIONS.FresnelPower)
+			),
+			0.05
 		),
 		FoamVertexAlpha = math.clamp(
 			readNumberAttribute(
@@ -634,6 +748,65 @@ local function resolveConfig(folder: Instance, options: WaterSystemOptions): Oce
 		),
 		Reflectance = math.clamp(
 			readNumberAttribute(folder, "OceanReflectance", options.Reflectance or DEFAULT_OPTIONS.Reflectance),
+			0,
+			1
+		),
+		CausticsEnabled = readBooleanAttribute(folder, "OceanCausticsEnabled", options.CausticsEnabled ~= false),
+		CausticsColor = readColorAttribute(
+			folder,
+			"OceanCausticsColor",
+			options.CausticsColor or DEFAULT_OPTIONS.CausticsColor
+		),
+		CausticsStrength = math.clamp(
+			readNumberAttribute(
+				folder,
+				"OceanCausticsStrength",
+				options.CausticsStrength or DEFAULT_OPTIONS.CausticsStrength
+			),
+			0,
+			2
+		),
+		ShallowCausticsStrength = math.clamp(
+			readNumberAttribute(
+				folder,
+				"OceanShallowCausticsStrength",
+				options.ShallowCausticsStrength or DEFAULT_OPTIONS.ShallowCausticsStrength
+			),
+			0,
+			2
+		),
+		DeepCausticsStrength = math.clamp(
+			readNumberAttribute(
+				folder,
+				"OceanDeepCausticsStrength",
+				options.DeepCausticsStrength or DEFAULT_OPTIONS.DeepCausticsStrength
+			),
+			0,
+			1
+		),
+		CausticsScale = math.max(
+			readNumberAttribute(folder, "OceanCausticsScale", options.CausticsScale or DEFAULT_OPTIONS.CausticsScale),
+			0.5
+		),
+		CausticsSpeed = math.max(
+			readNumberAttribute(folder, "OceanCausticsSpeed", options.CausticsSpeed or DEFAULT_OPTIONS.CausticsSpeed),
+			0
+		),
+		CausticsDepthFade = math.clamp(
+			readNumberAttribute(
+				folder,
+				"OceanCausticsDepthFade",
+				options.CausticsDepthFade or DEFAULT_OPTIONS.CausticsDepthFade
+			),
+			0.02,
+			1
+		),
+		CausticsVoronoiStrength = math.clamp(
+			readNumberAttribute(
+				folder,
+				"OceanCausticsVoronoiStrength",
+				options.CausticsVoronoiStrength or DEFAULT_OPTIONS.CausticsVoronoiStrength
+			),
 			0,
 			1
 		),
