@@ -55,22 +55,28 @@ return function(deps: any)
 		return (frameIndex * vertexCount + (vertexIndex - 1)) * SURFACE_VERTEX_COLOR_BYTES
 	end
 
+	local function toU8(v: number): number
+		local n = math.floor(v * 255 + 0.5)
+
+		return if n < 0 then 0 elseif n > 255 then 255 else n
+	end
+
 	local function writeColorPixel(pixels: buffer, offset: number, color: Color3, alpha: number)
-		buffer.writeu8(pixels, offset, math.clamp(math.floor(color.R * 255 + 0.5), 0, 255))
-		buffer.writeu8(pixels, offset + 1, math.clamp(math.floor(color.G * 255 + 0.5), 0, 255))
-		buffer.writeu8(pixels, offset + 2, math.clamp(math.floor(color.B * 255 + 0.5), 0, 255))
-		buffer.writeu8(pixels, offset + 3, math.clamp(math.floor(alpha * 255 + 0.5), 0, 255))
+		buffer.writeu8(pixels, offset, toU8(color.R))
+		buffer.writeu8(pixels, offset + 1, toU8(color.G))
+		buffer.writeu8(pixels, offset + 2, toU8(color.B))
+		buffer.writeu8(pixels, offset + 3, toU8(alpha))
 	end
 
 	local function writeNormalPixel(pixels: buffer, offset: number, normalLocal: Vector3)
 		local normal = if normalLocal.Magnitude > 0.001 then normalLocal.Unit else Vector3.yAxis
 		local softened = Vector3.new(normal.X * 0.58, normal.Y + 0.18, normal.Z * 0.58)
 
-		normal = if softened.Magnitude > 0.001 then softened.Unit else Vector3.yAxis
+		normal = softened.Unit
 
-		buffer.writeu8(pixels, offset, math.clamp(math.floor((normal.X * 0.5 + 0.5) * 255 + 0.5), 0, 255))
-		buffer.writeu8(pixels, offset + 1, math.clamp(math.floor((-normal.Z * 0.5 + 0.5) * 255 + 0.5), 0, 255))
-		buffer.writeu8(pixels, offset + 2, math.clamp(math.floor((normal.Y * 0.5 + 0.5) * 255 + 0.5), 0, 255))
+		buffer.writeu8(pixels, offset, toU8(normal.X * 0.5 + 0.5))
+		buffer.writeu8(pixels, offset + 1, toU8(-normal.Z * 0.5 + 0.5))
+		buffer.writeu8(pixels, offset + 2, toU8(normal.Y * 0.5 + 0.5))
 		buffer.writeu8(pixels, offset + 3, 255)
 	end
 
@@ -145,18 +151,18 @@ return function(deps: any)
 		)
 		local detail = detailGain or 0
 
-		local function localHeight(x: number, z: number): number
-			return sampleSurfaceHeightForNormal(tile, x, z, time, waterBuffer, detail)
-		end
-
 		local x0 = localX - distance
 		local x1 = localX + distance
 		local z0 = localZ - distance
 		local z1 = localZ + distance
-		local px0 = Vector3.new(x0, localHeight(x0, localZ), localZ)
-		local px1 = Vector3.new(x1, localHeight(x1, localZ), localZ)
-		local pz0 = Vector3.new(localX, localHeight(localX, z0), z0)
-		local pz1 = Vector3.new(localX, localHeight(localX, z1), z1)
+		local hx0 = sampleSurfaceHeightForNormal(tile, x0, localZ, time, waterBuffer, detail)
+		local hx1 = sampleSurfaceHeightForNormal(tile, x1, localZ, time, waterBuffer, detail)
+		local hz0 = sampleSurfaceHeightForNormal(tile, localX, z0, time, waterBuffer, detail)
+		local hz1 = sampleSurfaceHeightForNormal(tile, localX, z1, time, waterBuffer, detail)
+		local px0 = Vector3.new(x0, hx0, localZ)
+		local px1 = Vector3.new(x1, hx1, localZ)
+		local pz0 = Vector3.new(localX, hz0, z0)
+		local pz1 = Vector3.new(localX, hz1, z1)
 		local normalLocal = (pz1 - pz0):Cross(px1 - px0)
 
 		if normalLocal.Magnitude <= 0.001 then
@@ -216,10 +222,70 @@ return function(deps: any)
 		return a + (b - a) * tz
 	end
 
-	local function getSurfaceBakeKey(tile: InternalOceanTile): string
+	local function getSurfaceBakeKey(tile: InternalOceanTile, waveLoopKeyOverride: string?): string
 		local config = tile._Config
+		local waveLoopKey = waveLoopKeyOverride or getWaveLoopKey(config)
+		local resolution = getSurfaceImageResolution(config)
+		local vertexCount = #tile._Vertices
 
-		return `{getWaveLoopKey(config)}:{config.SurfaceColorMode}:{config.WaterColorBack.R}:{config.WaterColorBack.G}:{config.WaterColorBack.B}:{config.WaterColorTop.R}:{config.WaterColorTop.G}:{config.WaterColorTop.B}:{config.WaterColorGain}:{config.WaterAlphaGain}:{config.WaterVertexAlpha}:{config.FoamColor.R}:{config.FoamColor.G}:{config.FoamColor.B}:{config.CrestFoamAlphaBack}:{config.CrestFoamAlphaTop}:{config.CrestFoamAlphaGain}:{config.WaveFoamAlphaBack}:{config.WaveFoamAlphaTop}:{config.WaveFoamAlphaGain}:{config.ShoreFoamStrength}:{config.FoamTrailStrength}:{config.FoamTrailLength}:{config.FoamTrailFeather}:{config.ShallowDepth}:{config.LakeDepth}:{config.OceanDepth}:{config.FoamNoiseInfluence}:{config.FoamNoiseSize}:{config.FoamNoiseSeed}:{config.FoamTextureStudsPerTile}:{config.CausticsEnabled}:{config.CausticsColor.R}:{config.CausticsColor.G}:{config.CausticsColor.B}:{config.CausticsStrength}:{config.ShallowCausticsStrength}:{config.DeepCausticsStrength}:{config.CausticsScale}:{config.CausticsSpeed}:{config.CausticsDepthFade}:{config.CausticsVoronoiStrength}:{getSurfaceImageResolution(config)}:{#tile._Vertices}:{tile._WaveLoopMinHeight}:{tile._WaveLoopMaxHeight}`
+		if
+			tile._CachedSurfaceBakeConfig == config
+			and tile._CachedSurfaceBakeWaveLoopKey == waveLoopKey
+			and tile._CachedSurfaceBakeResolution == resolution
+			and tile._CachedSurfaceBakeVertexCount == vertexCount
+			and tile._CachedSurfaceBakeMinHeight == tile._WaveLoopMinHeight
+			and tile._CachedSurfaceBakeMaxHeight == tile._WaveLoopMaxHeight
+		then
+			local cachedKey = tile._CachedSurfaceBakeKey
+
+			if cachedKey ~= nil then
+				return cachedKey
+			end
+		end
+
+		local key = `{waveLoopKey}:{config.SurfaceColorMode}:{config.WaterColorBack.R}:{config.WaterColorBack.G}:{config.WaterColorBack.B}:{config.WaterColorTop.R}:{config.WaterColorTop.G}:{config.WaterColorTop.B}:{config.WaterColorGain}:{config.WaterAlphaGain}:{config.WaterVertexAlpha}:{config.FoamColor.R}:{config.FoamColor.G}:{config.FoamColor.B}:{config.CrestFoamAlphaBack}:{config.CrestFoamAlphaTop}:{config.CrestFoamAlphaGain}:{config.WaveFoamAlphaBack}:{config.WaveFoamAlphaTop}:{config.WaveFoamAlphaGain}:{config.ShoreFoamStrength}:{config.FoamTrailStrength}:{config.FoamTrailLength}:{config.FoamTrailFeather}:{config.ShallowDepth}:{config.LakeDepth}:{config.OceanDepth}:{config.FoamNoiseInfluence}:{config.FoamNoiseSize}:{config.FoamNoiseSeed}:{config.FoamTextureStudsPerTile}:{config.CausticsEnabled}:{config.CausticsColor.R}:{config.CausticsColor.G}:{config.CausticsColor.B}:{config.CausticsStrength}:{config.ShallowCausticsStrength}:{config.DeepCausticsStrength}:{config.CausticsScale}:{config.CausticsSpeed}:{config.CausticsDepthFade}:{config.CausticsVoronoiStrength}:{resolution}:{vertexCount}:{tile._WaveLoopMinHeight}:{tile._WaveLoopMaxHeight}`
+
+		tile._CachedSurfaceBakeConfig = config
+		tile._CachedSurfaceBakeWaveLoopKey = waveLoopKey
+		tile._CachedSurfaceBakeResolution = resolution
+		tile._CachedSurfaceBakeVertexCount = vertexCount
+		tile._CachedSurfaceBakeMinHeight = tile._WaveLoopMinHeight
+		tile._CachedSurfaceBakeMaxHeight = tile._WaveLoopMaxHeight
+		tile._CachedSurfaceBakeKey = key
+
+		return key
+	end
+
+	local function getSurfaceColorConfigKey(config: any): string
+		return `{config.SurfaceColorBake}:{config.SurfaceColorMode}:{config.WaterColorBack.R}:{config.WaterColorBack.G}:{config.WaterColorBack.B}:{config.WaterColorTop.R}:{config.WaterColorTop.G}:{config.WaterColorTop.B}:{config.WaterColorGain}:{config.WaterAlphaGain}:{config.WaterVertexAlpha}:{config.FoamColor.R}:{config.FoamColor.G}:{config.FoamColor.B}:{config.CrestFoamAlphaBack}:{config.CrestFoamAlphaTop}:{config.CrestFoamAlphaGain}:{config.WaveFoamAlphaBack}:{config.WaveFoamAlphaTop}:{config.WaveFoamAlphaGain}`
+	end
+
+	local function getCachedSurfaceColorConfig(tile: InternalOceanTile): WaterSurfaceColor.SurfaceColorConfig
+		local config = tile._Config
+		local cachedConfig = tile._CachedSurfaceColorConfig
+
+		if tile._CachedSurfaceColorConfigSource == config and cachedConfig ~= nil then
+			return cachedConfig
+		end
+
+		local key = getSurfaceColorConfigKey(config)
+
+		if tile._CachedSurfaceColorConfigKey == key then
+			cachedConfig = tile._CachedSurfaceColorConfig
+
+			if cachedConfig ~= nil then
+				tile._CachedSurfaceColorConfigSource = config
+				return cachedConfig
+			end
+		end
+
+		local surfaceColorConfig = createSurfaceColorConfig(config)
+
+		tile._CachedSurfaceColorConfigKey = key
+		tile._CachedSurfaceColorConfigSource = config
+		tile._CachedSurfaceColorConfig = surfaceColorConfig
+
+		return surfaceColorConfig
 	end
 
 	local function writeBakedVertexFrameColor(
@@ -269,18 +335,31 @@ return function(deps: any)
 		resolution: number,
 		x: number,
 		y: number,
-		foamOnly: boolean
+		foamOnly: boolean,
+		sizeX: number?,
+		sizeZ: number?,
+		frameBase: number?
 	)
-		local size = tile.SourcePart.Size
+		local resolvedSizeX = sizeX
+		local resolvedSizeZ = sizeZ
+
+		if resolvedSizeX == nil or resolvedSizeZ == nil then
+			local size = tile.SourcePart.Size
+
+			resolvedSizeX = size.X
+			resolvedSizeZ = size.Z
+		end
+
 		local u = if resolution > 1 then x / (resolution - 1) else 0
 		local v = if resolution > 1 then y / (resolution - 1) else 0
-		local localX = (u - 0.5) * size.X
-		local localZ = (0.5 - v) * size.Z
+		local localX = (u - 0.5) * (resolvedSizeX :: number)
+		local localZ = (0.5 - v) * (resolvedSizeZ :: number)
 		local height = sampleBakedHeightFrame(tile, heights, frameIndex, vertexCount, localX, localZ)
 		local foamTime = (frameIndex / math.max(tile._WaveLoopFrames, 1)) * tile._WaveLoopDuration
 		local normalizedHeight = WaterSurfaceColor.NormalizeHeight(height, tile._WaveLoopMinHeight, tile._WaveLoopMaxHeight)
 		local depthAlpha = sampleWaterDepthAlpha(tile, localX, localZ)
-		local offset = surfaceTextureFrameOffset(frameIndex, resolution) + surfaceImagePixelOffset(resolution, x, y)
+		local offset = (frameBase or surfaceTextureFrameOffset(frameIndex, resolution))
+			+ surfaceImagePixelOffset(resolution, x, y)
 		local shoreFoamAlpha = sampleShoreFoamAlpha(tile, localX, localZ, foamTime)
 
 		if foamOnly then
@@ -310,19 +389,22 @@ return function(deps: any)
 		time: number,
 		sampleDistance: number
 	): Vector3
-		local function localHeight(x: number, z: number): number
-			return sampleBakedHeightAtTime(tile, heights, x, z, time)
-				+ sampleWaterNormalDetailHeight(tile, x, z, time)
-		end
-
 		local x0 = localX - sampleDistance
 		local x1 = localX + sampleDistance
 		local z0 = localZ - sampleDistance
 		local z1 = localZ + sampleDistance
-		local px0 = Vector3.new(x0, localHeight(x0, localZ), localZ)
-		local px1 = Vector3.new(x1, localHeight(x1, localZ), localZ)
-		local pz0 = Vector3.new(localX, localHeight(localX, z0), z0)
-		local pz1 = Vector3.new(localX, localHeight(localX, z1), z1)
+		local hx0 = sampleBakedHeightAtTime(tile, heights, x0, localZ, time)
+			+ sampleWaterNormalDetailHeight(tile, x0, localZ, time)
+		local hx1 = sampleBakedHeightAtTime(tile, heights, x1, localZ, time)
+			+ sampleWaterNormalDetailHeight(tile, x1, localZ, time)
+		local hz0 = sampleBakedHeightAtTime(tile, heights, localX, z0, time)
+			+ sampleWaterNormalDetailHeight(tile, localX, z0, time)
+		local hz1 = sampleBakedHeightAtTime(tile, heights, localX, z1, time)
+			+ sampleWaterNormalDetailHeight(tile, localX, z1, time)
+		local px0 = Vector3.new(x0, hx0, localZ)
+		local px1 = Vector3.new(x1, hx1, localZ)
+		local pz0 = Vector3.new(localX, hz0, z0)
+		local pz1 = Vector3.new(localX, hz1, z1)
 		local normalLocal = (pz1 - pz0):Cross(px1 - px0)
 
 		if normalLocal.Magnitude <= 0.001 then
@@ -341,16 +423,29 @@ return function(deps: any)
 		resolution: number,
 		x: number,
 		y: number,
-		sampleDistance: number
+		sampleDistance: number,
+		sizeX: number?,
+		sizeZ: number?,
+		frameBase: number?
 	)
-		local size = tile.SourcePart.Size
+		local resolvedSizeX = sizeX
+		local resolvedSizeZ = sizeZ
+
+		if resolvedSizeX == nil or resolvedSizeZ == nil then
+			local size = tile.SourcePart.Size
+
+			resolvedSizeX = size.X
+			resolvedSizeZ = size.Z
+		end
+
 		local u = if resolution > 1 then x / (resolution - 1) else 0
 		local v = if resolution > 1 then y / (resolution - 1) else 0
-		local localX = (u - 0.5) * size.X
-		local localZ = (0.5 - v) * size.Z
+		local localX = (u - 0.5) * (resolvedSizeX :: number)
+		local localZ = (0.5 - v) * (resolvedSizeZ :: number)
 		local frameTime = (frameIndex / math.max(frameCount, 1)) * tile._WaveLoopDuration
 		local normalLocal = sampleBakedSurfaceNormalLocal(tile, heights, localX, localZ, frameTime, sampleDistance)
-		local offset = surfaceTextureFrameOffset(frameIndex, resolution) + surfaceImagePixelOffset(resolution, x, y)
+		local offset = (frameBase or surfaceTextureFrameOffset(frameIndex, resolution))
+			+ surfaceImagePixelOffset(resolution, x, y)
 
 		writeNormalPixel(pixels, offset, normalLocal)
 	end
@@ -391,8 +486,10 @@ return function(deps: any)
 		local resolution = getSurfaceNormalResolution(config)
 		local pixels = buffer.create(resolution * resolution * frames * SURFACE_IMAGE_PIXEL_BYTES)
 		local size = tile.SourcePart.Size
-		local stepX = size.X / math.max(resolution - 1, 1)
-		local stepZ = size.Z / math.max(resolution - 1, 1)
+		local sizeX = size.X
+		local sizeZ = size.Z
+		local stepX = sizeX / math.max(resolution - 1, 1)
+		local stepZ = sizeZ / math.max(resolution - 1, 1)
 		local sampleDistance = math.max(math.min(stepX, stepZ) * 0.65, 0.25)
 		local processedSinceYield = 0
 
@@ -412,6 +509,8 @@ return function(deps: any)
 				return false
 			end
 
+			local frameBase = surfaceTextureFrameOffset(frameIndex, resolution)
+
 			for y = 0, resolution - 1 do
 				for x = 0, resolution - 1 do
 					writeBakedNormalFramePixel(
@@ -423,7 +522,10 @@ return function(deps: any)
 						resolution,
 						x,
 						y,
-						sampleDistance
+						sampleDistance,
+						sizeX,
+						sizeZ,
+						frameBase
 					)
 
 					processedSinceYield += 1
@@ -465,7 +567,7 @@ return function(deps: any)
 		local config = tile._Config
 		local frames = math.max(tile._WaveLoopFrames, 1)
 		local vertexCount = #tile._Vertices
-		local surfaceColorConfig = createSurfaceColorConfig(config)
+		local surfaceColorConfig = getCachedSurfaceColorConfig(tile)
 		local bakeVertexColors = usesPaintVertices(config)
 		local bakeTexture = usesSurfaceAppearanceTexture(config)
 		local vertexColors = if bakeVertexColors
@@ -478,6 +580,9 @@ return function(deps: any)
 		local includeVertexFoam = config.SurfaceColorMode == "PaintVertices"
 		local textureFoamOnly = config.SurfaceColorMode == "FoamSurfaceAppearance"
 		local processedSinceYield = 0
+		local size = tile.SourcePart.Size
+		local sizeX = size.X
+		local sizeZ = size.Z
 
 		if not isSurfaceBakeCurrent(tile, bakeId, key, heights) then
 			return false
@@ -497,6 +602,8 @@ return function(deps: any)
 			if not isSurfaceBakeCurrent(tile, bakeId, key, heights) then
 				return false
 			end
+
+			local frameBase = surfaceTextureFrameOffset(frameIndex, resolution)
 
 			if vertexColors ~= nil then
 				for vertexIndex = 1, vertexCount do
@@ -537,7 +644,10 @@ return function(deps: any)
 							resolution,
 							x,
 							y,
-							textureFoamOnly
+							textureFoamOnly,
+							sizeX,
+							sizeZ,
+							frameBase
 						)
 
 						processedSinceYield += 1
@@ -594,11 +704,13 @@ return function(deps: any)
 			return false
 		end
 
-		if not hasCompleteWaveLoop(tile, getWaveLoopKey(config)) then
+		local waveLoopKey = getWaveLoopKey(config)
+
+		if not hasCompleteWaveLoop(tile, waveLoopKey) then
 			return false
 		end
 
-		local key = getSurfaceBakeKey(tile)
+		local key = getSurfaceBakeKey(tile, waveLoopKey)
 		local needsVertexColors = usesPaintVertices(config)
 		local needsTexture = usesSurfaceAppearanceTexture(config)
 		local hasVertexColors = not needsVertexColors or tile._SurfaceVertexFrameColors ~= nil
@@ -682,8 +794,9 @@ return function(deps: any)
 		end
 
 		local frameIndex = getDiscreteWaveLoopFrame(tile, time, tile._SurfaceVertexFrameCount)
+		local hasFresnel = usesFresnelAlpha(tile._Config)
 
-		if tile._SurfaceVertexLastFrameIndex == frameIndex and not usesFresnelAlpha(tile._Config) then
+		if tile._SurfaceVertexLastFrameIndex == frameIndex and not hasFresnel then
 			return true
 		end
 
@@ -698,7 +811,7 @@ return function(deps: any)
 			local a = buffer.readu8(colors, offset + 3) / 255
 			local finalAlpha = a
 
-			if vertex ~= nil and vertex.surfaceEnabled and usesFresnelAlpha(tile._Config) then
+			if vertex ~= nil and vertex.surfaceEnabled and hasFresnel then
 				local baseLocal = vertex.baseLocal
 				local height = sampleSurfaceHeightForNormal(tile, baseLocal.X, baseLocal.Z, time, waterBuffer, 0.18)
 				local normalLocal = sampleSurfaceNormalLocal(tile, baseLocal.X, baseLocal.Z, time, waterBuffer, nil, 0.18)
@@ -780,7 +893,7 @@ return function(deps: any)
 		local resolution = math.max(tile._SurfaceImageResolution, 1)
 		local pixels = buffer.create(resolution * resolution * SURFACE_IMAGE_PIXEL_BYTES)
 		local size = tile.SourcePart.Size
-		local surfaceColorConfig = createSurfaceColorConfig(tile._Config)
+		local surfaceColorConfig = getCachedSurfaceColorConfig(tile)
 		local foamOnly = tile._Config.SurfaceColorMode == "FoamSurfaceAppearance"
 
 		for y = 0, resolution - 1 do
