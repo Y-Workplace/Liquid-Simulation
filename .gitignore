@@ -1,6 +1,0 @@
-sourcemap.json
-Packages/*
-!Packages/init.meta.json
-DevPackages/
-*.rbxlx
-*.rbxl
