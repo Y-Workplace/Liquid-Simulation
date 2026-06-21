@@ -74,13 +74,19 @@ return function(deps: any)
 
 		normal = softened.Unit
 
+		-- Standard mapping: R = X, G = Y, B = Z (all remapped from [-1,1] to [0,255])
 		buffer.writeu8(pixels, offset, toU8(normal.X * 0.5 + 0.5))
-		buffer.writeu8(pixels, offset + 1, toU8(-normal.Z * 0.5 + 0.5))
-		buffer.writeu8(pixels, offset + 2, toU8(normal.Y * 0.5 + 0.5))
+		buffer.writeu8(pixels, offset + 1, toU8(normal.Y * 0.5 + 0.5))
+		buffer.writeu8(pixels, offset + 2, toU8(normal.Z * 0.5 + 0.5))
 		buffer.writeu8(pixels, offset + 3, 255)
 	end
 
-	local function sampleWaterNormalDetailHeight(tile: InternalOceanTile, localX: number, localZ: number, time: number): number
+	local function sampleWaterNormalDetailHeight(
+		tile: InternalOceanTile,
+		localX: number,
+		localZ: number,
+		time: number
+	): number
 		local config = tile._Config
 		local scale = math.max(config.WaterNormalScale, 0.5)
 		local loopDuration = math.max(tile._WaveLoopDuration, config.WaveLoopDuration, 0.25)
@@ -95,7 +101,8 @@ return function(deps: any)
 		local warpX = (warp - 0.5) * scale * 0.72 + math.cos(phase + warp * math.pi * 2) * scale * 0.08
 		local warpZ = (0.5 - warp) * scale * 0.62 + math.sin(phase * 0.8 + warp * math.pi * 2) * scale * 0.08
 		local broadA = sampleValueNoise(sampleX + warpX, sampleZ + warpZ, scale * 3.15, seed + 1217)
-		local broadB = sampleValueNoise(sampleX * 0.86 - warpZ * 0.28, sampleZ * 0.92 + warpX * 0.24, scale * 1.72, seed + 1231)
+		local broadB =
+			sampleValueNoise(sampleX * 0.86 - warpZ * 0.28, sampleZ * 0.92 + warpX * 0.24, scale * 1.72, seed + 1231)
 		local cloud = sampleValueNoise(sampleX - warpX * 0.38, sampleZ + warpZ * 0.42, scale * 1.18, seed + 1249)
 		local roundedCloud = smoothstep(0.14, 0.9, 1 - math.abs(cloud - 0.5) * 2)
 		local softCells = sampleVoronoiEdge(
@@ -145,10 +152,8 @@ return function(deps: any)
 		detailGain: number?
 	): Vector3
 		local size = tile.SourcePart.Size
-		local distance = math.max(
-			sampleDistance or math.max(tile._Config.VertexSpacing * 0.5, math.min(size.X, size.Z) / 128),
-			0.25
-		)
+		local distance =
+			math.max(sampleDistance or math.max(tile._Config.VertexSpacing * 0.5, math.min(size.X, size.Z) / 128), 0.25)
 		local detail = detailGain or 0
 
 		local x0 = localX - distance
@@ -243,7 +248,8 @@ return function(deps: any)
 			end
 		end
 
-		local key = `{waveLoopKey}:{config.SurfaceColorMode}:{config.WaterColorBack.R}:{config.WaterColorBack.G}:{config.WaterColorBack.B}:{config.WaterColorTop.R}:{config.WaterColorTop.G}:{config.WaterColorTop.B}:{config.WaterColorGain}:{config.WaterAlphaGain}:{config.WaterVertexAlpha}:{config.FoamColor.R}:{config.FoamColor.G}:{config.FoamColor.B}:{config.CrestFoamAlphaBack}:{config.CrestFoamAlphaTop}:{config.CrestFoamAlphaGain}:{config.WaveFoamAlphaBack}:{config.WaveFoamAlphaTop}:{config.WaveFoamAlphaGain}:{config.ShoreFoamStrength}:{config.FoamTrailStrength}:{config.FoamTrailLength}:{config.FoamTrailFeather}:{config.ShallowDepth}:{config.LakeDepth}:{config.OceanDepth}:{config.FoamNoiseInfluence}:{config.FoamNoiseSize}:{config.FoamNoiseSeed}:{config.FoamTextureStudsPerTile}:{config.CausticsEnabled}:{config.CausticsColor.R}:{config.CausticsColor.G}:{config.CausticsColor.B}:{config.CausticsStrength}:{config.ShallowCausticsStrength}:{config.DeepCausticsStrength}:{config.CausticsScale}:{config.CausticsSpeed}:{config.CausticsDepthFade}:{config.CausticsVoronoiStrength}:{resolution}:{vertexCount}:{tile._WaveLoopMinHeight}:{tile._WaveLoopMaxHeight}`
+		local key =
+			`{waveLoopKey}:{config.SurfaceColorMode}:{config.WaterColorBack.R}:{config.WaterColorBack.G}:{config.WaterColorBack.B}:{config.WaterColorTop.R}:{config.WaterColorTop.G}:{config.WaterColorTop.B}:{config.WaterColorGain}:{config.WaterAlphaGain}:{config.WaterVertexAlpha}:{config.FoamColor.R}:{config.FoamColor.G}:{config.FoamColor.B}:{config.CrestFoamAlphaBack}:{config.CrestFoamAlphaTop}:{config.CrestFoamAlphaGain}:{config.WaveFoamAlphaBack}:{config.WaveFoamAlphaTop}:{config.WaveFoamAlphaGain}:{config.ShoreFoamStrength}:{config.FoamTrailStrength}:{config.FoamTrailLength}:{config.FoamTrailFeather}:{config.ShallowDepth}:{config.LakeDepth}:{config.OceanDepth}:{config.FoamNoiseInfluence}:{config.FoamNoiseSize}:{config.FoamNoiseSeed}:{config.FoamTextureStudsPerTile}:{config.CausticsEnabled}:{config.CausticsColor.R}:{config.CausticsColor.G}:{config.CausticsColor.B}:{config.CausticsStrength}:{config.ShallowCausticsStrength}:{config.DeepCausticsStrength}:{config.CausticsScale}:{config.CausticsSpeed}:{config.CausticsDepthFade}:{config.CausticsVoronoiStrength}:{resolution}:{vertexCount}:{tile._WaveLoopMinHeight}:{tile._WaveLoopMaxHeight}`
 
 		tile._CachedSurfaceBakeConfig = config
 		tile._CachedSurfaceBakeWaveLoopKey = waveLoopKey
@@ -308,7 +314,8 @@ return function(deps: any)
 		local localX = vertex.baseLocal.X
 		local localZ = vertex.baseLocal.Z
 		local height = readWaveLoopHeightFrame(heights, frameIndex, vertexCount, vertexIndex)
-		local normalizedHeight = WaterSurfaceColor.NormalizeHeight(height, tile._WaveLoopMinHeight, tile._WaveLoopMaxHeight)
+		local normalizedHeight =
+			WaterSurfaceColor.NormalizeHeight(height, tile._WaveLoopMinHeight, tile._WaveLoopMaxHeight)
 		local depthAlpha = sampleWaterDepthAlpha(tile, localX, localZ)
 		local offset = surfaceVertexColorOffset(frameIndex, vertexIndex, vertexCount)
 
@@ -356,7 +363,8 @@ return function(deps: any)
 		local localZ = (0.5 - v) * (resolvedSizeZ :: number)
 		local height = sampleBakedHeightFrame(tile, heights, frameIndex, vertexCount, localX, localZ)
 		local foamTime = (frameIndex / math.max(tile._WaveLoopFrames, 1)) * tile._WaveLoopDuration
-		local normalizedHeight = WaterSurfaceColor.NormalizeHeight(height, tile._WaveLoopMinHeight, tile._WaveLoopMaxHeight)
+		local normalizedHeight =
+			WaterSurfaceColor.NormalizeHeight(height, tile._WaveLoopMinHeight, tile._WaveLoopMaxHeight)
 		local depthAlpha = sampleWaterDepthAlpha(tile, localX, localZ)
 		local offset = (frameBase or surfaceTextureFrameOffset(frameIndex, resolution))
 			+ surfaceImagePixelOffset(resolution, x, y)
@@ -378,7 +386,9 @@ return function(deps: any)
 	local function getSurfaceNormalBakeKey(tile: InternalOceanTile): string
 		local config = tile._Config
 
-		return `{NORMAL_DETAIL_BAKE_VERSION}:{getWaveLoopKey(config)}:{config.WaterNormalResolution}:{config.WaterNormalStrength}:{config.WaterNormalScale}:{config.WaterNormalSpeed}:{config.WaterNormalUpdateInterval}:{getSurfaceNormalFrameCount(config)}:{getSurfaceNormalResolution(config)}:{#tile._Vertices}:{tile.SourcePart.Size.X}:{tile.SourcePart.Size.Z}`
+		return `{NORMAL_DETAIL_BAKE_VERSION}:{getWaveLoopKey(config)}:{config.WaterNormalResolution}:{config.WaterNormalStrength}:{config.WaterNormalScale}:{config.WaterNormalSpeed}:{config.WaterNormalUpdateInterval}:{getSurfaceNormalFrameCount(
+			config
+		)}:{getSurfaceNormalResolution(config)}:{#tile._Vertices}:{tile.SourcePart.Size.X}:{tile.SourcePart.Size.Z}`
 	end
 
 	local function sampleBakedSurfaceNormalLocal(
@@ -450,12 +460,7 @@ return function(deps: any)
 		writeNormalPixel(pixels, offset, normalLocal)
 	end
 
-	local function isSurfaceBakeCurrent(
-		tile: InternalOceanTile,
-		bakeId: number,
-		key: string,
-		heights: buffer
-	): boolean
+	local function isSurfaceBakeCurrent(tile: InternalOceanTile, bakeId: number, key: string, heights: buffer): boolean
 		return not tile._Destroyed
 			and tile._SurfaceBakeId == bakeId
 			and tile._SurfaceBakeKey == key
@@ -814,7 +819,8 @@ return function(deps: any)
 			if vertex ~= nil and vertex.surfaceEnabled and hasFresnel then
 				local baseLocal = vertex.baseLocal
 				local height = sampleSurfaceHeightForNormal(tile, baseLocal.X, baseLocal.Z, time, waterBuffer, 0.18)
-				local normalLocal = sampleSurfaceNormalLocal(tile, baseLocal.X, baseLocal.Z, time, waterBuffer, nil, 0.18)
+				local normalLocal =
+					sampleSurfaceNormalLocal(tile, baseLocal.X, baseLocal.Z, time, waterBuffer, nil, 0.18)
 				local fresnelAlpha = sampleSurfaceFresnelAlpha(
 					tile,
 					Vector3.new(baseLocal.X, height, baseLocal.Z),
@@ -871,7 +877,11 @@ return function(deps: any)
 		return true
 	end
 
-	local function updateSurfaceAppearanceTexture(tile: InternalOceanTile, time: number, waterBuffer: WaterBuffer.WaterBuffer?)
+	local function updateSurfaceAppearanceTexture(
+		tile: InternalOceanTile,
+		time: number,
+		waterBuffer: WaterBuffer.WaterBuffer?
+	)
 		if not ensureSurfaceAppearance(tile) then
 			return
 		end
@@ -909,22 +919,21 @@ return function(deps: any)
 					height += waterBuffer:SampleHeight(localX, localZ)
 				end
 
-				local normalizedHeight = WaterSurfaceColor.NormalizeHeight(
-					height,
-					tile._WaveLoopMinHeight,
-					tile._WaveLoopMaxHeight
-				)
+				local normalizedHeight =
+					WaterSurfaceColor.NormalizeHeight(height, tile._WaveLoopMinHeight, tile._WaveLoopMaxHeight)
 				local depthAlpha = sampleWaterDepthAlpha(tile, localX, localZ)
 				local offset = surfaceImagePixelOffset(resolution, x, y)
 				local shoreFoamAlpha = sampleShoreFoamAlpha(tile, localX, localZ, time)
 
 				if foamOnly then
-					local sample = WaterSurfaceColor.Sample(surfaceColorConfig, normalizedHeight, shoreFoamAlpha, depthAlpha)
+					local sample =
+						WaterSurfaceColor.Sample(surfaceColorConfig, normalizedHeight, shoreFoamAlpha, depthAlpha)
 					local foamAlpha = resolveFoamOnlyAlpha(tile, sample, depthAlpha, localX, localZ, time)
 
 					writeColorPixel(pixels, offset, sample.FoamColor, foamAlpha)
 				else
-					local sample = WaterSurfaceColor.Sample(surfaceColorConfig, normalizedHeight, shoreFoamAlpha, depthAlpha)
+					local sample =
+						WaterSurfaceColor.Sample(surfaceColorConfig, normalizedHeight, shoreFoamAlpha, depthAlpha)
 					local finalColor, finalAlpha = composeSurfaceSample(tile, sample, depthAlpha, localX, localZ, time)
 
 					writeColorPixel(pixels, offset, finalColor, finalAlpha)
@@ -1049,7 +1058,6 @@ return function(deps: any)
 		tile._SurfaceNormalLastUpdateTime = time
 		return true
 	end
-
 
 	return {
 		surfaceImagePixelOffset = surfaceImagePixelOffset,

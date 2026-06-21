@@ -75,11 +75,39 @@ function OceanTile.new(
 	spectrum: WaveSpectrum.WaveSpectrum,
 	config: TileConfig
 ): (OceanTile?, string?)
-	local editableMesh, editableMeshError = createEditableMesh()
-
+	local editableMesh, pooledMeshPart, editableMeshError = createEditableMesh(true)
 	if editableMesh == nil then
-		return nil, editableMeshError
+		warn(
+			"[WaterSystem] Tile init: reserved editable mesh is nil for sourcePart="
+				.. tostring(sourcePart)
+				.. "; error="
+				.. tostring(editableMeshError)
+		)
+		warn(debug.traceback())
 	end
+
+	-- Try to reserve a pooled mesh for the reflection as well (pool-only)
+	local reflectionEditableMesh, pooledReflectionMeshPart, reflectionMeshError = nil, nil, nil
+	local available = deps.getEditableMeshPoolAvailableCount and deps.getEditableMeshPoolAvailableCount() or 0
+	if available > 0 then
+		reflectionEditableMesh, pooledReflectionMeshPart, reflectionMeshError = createEditableMesh(true)
+	else
+		-- not enough pool capacity for reflection reservation
+		reflectionEditableMesh = nil
+		pooledReflectionMeshPart = nil
+		reflectionMeshError = "not enough pool capacity for reflection"
+	end
+	if reflectionEditableMesh == nil then
+		warn(
+			"[WaterSystem] Tile init: reserved reflection editable mesh is nil for sourcePart="
+				.. tostring(sourcePart)
+				.. "; error="
+				.. tostring(reflectionMeshError)
+		)
+		warn(debug.traceback())
+	end
+
+	-- continue even if editableMesh is nil (system supports plain MeshPart fallback)
 
 	local resolutionX, resolutionZ, gridXCoordinates, gridZCoordinates = getGridCoordinates(sourcePart, config)
 
@@ -88,6 +116,7 @@ function OceanTile.new(
 		MeshPart = nil,
 		ReflectionMeshPart = nil,
 		EditableMesh = editableMesh,
+		ReflectionEditableMesh = reflectionEditableMesh,
 		BaseCFrame = getBaseCFrame(sourcePart),
 		_Config = config,
 		_Spectrum = spectrum,
@@ -184,7 +213,29 @@ function OceanTile.new(
 		_ObstacleImpactVertices = nil,
 		_ObstacleImpactVertexCount = 0,
 		_LastObstacleSplashTime = 0,
+		_PooledMeshPart = (pooledMeshPart ~= nil),
+		_PooledReflectionMeshPart = (pooledReflectionMeshPart ~= nil),
+		_EditableMeshReleased = false,
+		_ReflectionEditableMeshReleased = false,
 	}, OceanTileClass) :: any
+
+	-- Capabilities: avoid pcall in hot loops by probing method presence once.
+	if editableMesh ~= nil then
+		tile._SurfaceUVSupported = type(editableMesh.AddUV) == "function"
+		tile._SurfaceColorSupported = type(editableMesh.AddColor) == "function"
+	else
+		tile._SurfaceUVSupported = false
+		tile._SurfaceColorSupported = false
+	end
+
+	-- Mesh editing capability probe: check method presence once to avoid pcalls in hot loops.
+	if editableMesh ~= nil then
+		tile._MeshEditingSupported = type(editableMesh.AddVertex) == "function"
+			and type(editableMesh.AddTriangle) == "function"
+			and type(editableMesh.SetPosition) == "function"
+	else
+		tile._MeshEditingSupported = false
+	end
 
 	buildMesh(tile)
 
@@ -196,19 +247,42 @@ function OceanTile.new(
 		ensureSurfaceVertexColors(tile)
 	end
 
-	local meshPart, meshPartError = createMeshPart(editableMesh)
+	local meshPart, meshPartError = pooledMeshPart, nil
+
+	if meshPart == nil then
+		meshPart, meshPartError = createMeshPart(editableMesh)
+	end
 
 	if meshPart == nil then
 		tile:Destroy()
 		return nil, meshPartError
 	end
 
-	local reflectionMeshPart, reflectionMeshPartError = createMeshPart(editableMesh)
+	local reflectionMeshPart, reflectionMeshPartError = pooledReflectionMeshPart, nil
+	local reflectionMeshPart, reflectionMeshPartError = pooledReflectionMeshPart, nil
 
 	if reflectionMeshPart == nil then
-		meshPart:Destroy()
-		tile:Destroy()
-		return nil, reflectionMeshPartError
+		-- Try to create a reflection mesh part from (in order): reserved reflection editable, main editable, or plain MeshPart fallback.
+		reflectionMeshPart, reflectionMeshPartError = createMeshPart(reflectionEditableMesh or editableMesh)
+		if reflectionMeshPart == nil then
+			-- final attempt: create plain MeshPart
+			reflectionMeshPart, reflectionMeshPartError = createMeshPart(nil)
+		end
+	end
+
+	-- If reflectionMeshPart still nil, we cannot create a reflection, but we should NOT
+	-- abort tile creation entirely. Log and continue without reflection.
+	if reflectionMeshPart == nil then
+		warn(
+			"[WaterSystem] Could not create reflection mesh part for tile; continuing without reflection: "
+				.. tostring(reflectionMeshPartError)
+		)
+		warn(debug.traceback())
+	else
+		-- attach reflection mesh part
+		reflectionMeshPart.CFrame = getReflectionCFrame(meshPart)
+		reflectionMeshPart.Parent = parent
+		tile.ReflectionMeshPart = reflectionMeshPart
 	end
 
 	if parent.Parent == nil then
@@ -228,7 +302,79 @@ function OceanTile.new(
 	reflectionMeshPart.Parent = parent
 	tile.ReflectionMeshPart = reflectionMeshPart
 
-	local hasSurfaceAppearance = ensureSurfaceAppearance(tile)
+	-- Reserve pooled editable images for this tile (pool-only). This avoids runtime
+	-- AssetService calls inside SurfaceResources and ensures images are ready
+	-- before calling `ensureSurfaceAppearance`.
+	local hasSurfaceAppearance = false
+	local needsColorMap = usesSurfaceAppearanceTexture(config)
+	local needsNormalMap = usesWaterNormalMap(config) and tile._SurfaceNormalSupported
+
+	if needsColorMap then
+		local colorResolution = deps.getSurfaceImageResolution(config)
+		local img, imgErr = deps.createEditableImage(true)
+		if img ~= nil then
+			-- prepare pixel buffer for the requested resolution (blank)
+			local pixels = buffer.create(colorResolution * colorResolution * deps.SURFACE_IMAGE_PIXEL_BYTES)
+			local stride = deps.SURFACE_IMAGE_PIXEL_BYTES
+			local totalPixels = colorResolution * colorResolution
+			for px = 0, totalPixels - 1 do
+				local base = px * stride
+				buffer.writeu8(pixels, base, 0)
+				buffer.writeu8(pixels, base + 1, 0)
+				buffer.writeu8(pixels, base + 2, 0)
+				buffer.writeu8(pixels, base + 3, 255)
+			end
+			local ok, err = pcall(function()
+				(img :: any):WritePixelsBuffer(Vector2.zero, Vector2.new(colorResolution, colorResolution), pixels)
+			end)
+			if ok then
+				tile._SurfaceImage = img
+				tile._SurfaceImageResolution = colorResolution
+			else
+				deps.releaseEditableImage(img)
+				tile._SurfaceImage = nil
+				tile._SurfaceImageResolution = 0
+			end
+		else
+			-- pool exhausted or unavailable; leave nil and let SurfaceResources fallback
+			tile._SurfaceImage = nil
+			tile._SurfaceImageResolution = 0
+		end
+	end
+
+	if needsNormalMap then
+		local normalResolution = deps.getSurfaceNormalResolution(config)
+		local nimg, nimgErr = deps.createEditableImage(true)
+		if nimg ~= nil then
+			local pixels = buffer.create(normalResolution * normalResolution * deps.SURFACE_IMAGE_PIXEL_BYTES)
+			local stride = deps.SURFACE_IMAGE_PIXEL_BYTES
+			local totalPixels = normalResolution * normalResolution
+			for px = 0, totalPixels - 1 do
+				local base = px * stride
+				-- neutral normal: X=0.5,Y=0.5,Z=1.0 -> R=128,G=128,B=255
+				buffer.writeu8(pixels, base, 128)
+				buffer.writeu8(pixels, base + 1, 128)
+				buffer.writeu8(pixels, base + 2, 255)
+				buffer.writeu8(pixels, base + 3, 255)
+			end
+			local okn, errn = pcall(function()
+				(nimg :: any):WritePixelsBuffer(Vector2.zero, Vector2.new(normalResolution, normalResolution), pixels)
+			end)
+			if okn then
+				tile._SurfaceNormalImage = nimg
+				tile._SurfaceNormalImageResolution = normalResolution
+			else
+				deps.releaseEditableImage(nimg)
+				tile._SurfaceNormalImage = nil
+				tile._SurfaceNormalImageResolution = 0
+			end
+		else
+			tile._SurfaceNormalImage = nil
+			tile._SurfaceNormalImageResolution = 0
+		end
+	end
+
+	hasSurfaceAppearance = ensureSurfaceAppearance(tile)
 	local hasVertexColors = usesPaintVertices(config) and tile._SurfaceColorSupported
 
 	if shouldUseWhiteMeshColor(config, hasVertexColors, hasSurfaceAppearance) then

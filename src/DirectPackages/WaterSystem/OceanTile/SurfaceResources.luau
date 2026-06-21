@@ -19,6 +19,9 @@ return function(deps: any)
 	local sampleShoreFoamAlpha = deps.sampleShoreFoamAlpha
 	local composeSurfaceSample = deps.composeSurfaceSample
 
+	-- Global guard to avoid spamming warnings when the editable-image pool is globally exhausted
+	local globalEditableImagePoolWarned = false
+
 	local function warnSurfaceColorUnsupported(tile: InternalOceanTile, err: any)
 		if tile._SurfaceColorWarningShown then
 			return
@@ -26,6 +29,7 @@ return function(deps: any)
 
 		tile._SurfaceColorWarningShown = true
 		warn("[WaterSystem] Surface color resource unavailable; falling back where possible: " .. tostring(err))
+		warn(debug.traceback())
 	end
 
 	local function usesSurfaceAppearanceTexture(config: TileConfig): boolean
@@ -37,14 +41,20 @@ return function(deps: any)
 	end
 
 	local function usesRenderSurfaceAppearance(config: TileConfig): boolean
-		return usesSurfaceAppearanceTexture(config) or config.SurfaceColorMode == "PaintVertices" or usesWaterNormalMap(config)
+		return usesSurfaceAppearanceTexture(config)
+			or config.SurfaceColorMode == "PaintVertices"
+			or usesWaterNormalMap(config)
 	end
 
 	local function usesPaintVertices(config: TileConfig): boolean
 		return config.SurfaceColorMode == "PaintVertices" or config.SurfaceColorMode == "FoamSurfaceAppearance"
 	end
 
-	local function shouldUseWhiteMeshColor(config: TileConfig, hasVertexColors: boolean, hasSurfaceAppearance: boolean): boolean
+	local function shouldUseWhiteMeshColor(
+		config: TileConfig,
+		hasVertexColors: boolean,
+		hasSurfaceAppearance: boolean
+	): boolean
 		if config.SurfaceColorMode == "SurfaceAppearance" then
 			return hasSurfaceAppearance
 		end
@@ -86,11 +96,13 @@ return function(deps: any)
 
 	local function addSurfaceColor(tile: InternalOceanTile, color: Color3, alpha: number): number?
 		local editableMesh: any = tile.EditableMesh
-		local ok, colorId = pcall(function()
-			return editableMesh:AddColor(color, alpha)
-		end)
+		if not editableMesh or not tile._SurfaceColorSupported then
+			return nil
+		end
 
-		if not ok or type(colorId) ~= "number" then
+		local colorId = editableMesh:AddColor(color, alpha)
+
+		if type(colorId) ~= "number" then
 			tile._SurfaceColorSupported = false
 			warnSurfaceColorUnsupported(tile, colorId)
 			return nil
@@ -101,11 +113,13 @@ return function(deps: any)
 
 	local function addSurfaceUV(tile: InternalOceanTile, uv: Vector2): number?
 		local editableMesh: any = tile.EditableMesh
-		local ok, uvId = pcall(function()
-			return editableMesh:AddUV(uv)
-		end)
+		if not editableMesh or not tile._SurfaceUVSupported then
+			return nil
+		end
 
-		if not ok or type(uvId) ~= "number" then
+		local uvId = editableMesh:AddUV(uv)
+
+		if type(uvId) ~= "number" then
 			tile._SurfaceUVSupported = false
 			warnSurfaceColorUnsupported(tile, uvId)
 			return nil
@@ -124,16 +138,11 @@ return function(deps: any)
 		end
 
 		local editableMesh: any = tile.EditableMesh
-		local ok, err = pcall(function()
-			editableMesh:SetFaceColors(face.id, { colorA, colorB, colorC })
-		end)
-
-		if not ok then
-			tile._SurfaceColorSupported = false
-			warnSurfaceColorUnsupported(tile, err)
+		if not editableMesh or not tile._SurfaceColorSupported then
 			return false
 		end
 
+		editableMesh:SetFaceColors(face.id, { colorA, colorB, colorC })
 		return true
 	end
 
@@ -147,40 +156,22 @@ return function(deps: any)
 		end
 
 		local editableMesh: any = tile.EditableMesh
-		local ok, err = pcall(function()
-			editableMesh:SetFaceUVs(face.id, { uvA, uvB, uvC })
-		end)
-
-		if not ok then
-			tile._SurfaceUVSupported = false
-			warnSurfaceColorUnsupported(tile, err)
+		if not editableMesh or not tile._SurfaceUVSupported then
 			return false
 		end
 
+		editableMesh:SetFaceUVs(face.id, { uvA, uvB, uvC })
 		return true
 	end
 
 	local function trySetSurfaceColor(tile: InternalOceanTile, colorId: number, color: Color3, alpha: number): boolean
 		local editableMesh: any = tile.EditableMesh
-		local ok, err = pcall(function()
-			editableMesh:SetColor(colorId, color)
-			editableMesh:SetColorAlpha(colorId, alpha)
-		end)
-
-		if ok then
-			return true
-		end
-
-		local fallbackOk, fallbackErr = pcall(function()
-			editableMesh:SetColor(colorId, color, alpha)
-		end)
-
-		if not fallbackOk then
-			tile._SurfaceColorSupported = false
-			warnSurfaceColorUnsupported(tile, fallbackErr or err)
+		if not editableMesh or not tile._SurfaceColorSupported then
 			return false
 		end
 
+		editableMesh:SetColor(colorId, color)
+		editableMesh:SetColorAlpha(colorId, alpha)
 		return true
 	end
 
@@ -229,12 +220,7 @@ return function(deps: any)
 		end
 	end
 
-	local function writeRenderSurfaceColor(
-		tile: InternalOceanTile,
-		vertexIndex: number,
-		color: Color3,
-		alpha: number
-	)
+	local function writeRenderSurfaceColor(tile: InternalOceanTile, vertexIndex: number, color: Color3, alpha: number)
 		ensureRenderSurfaceColorBuffer(tile)
 
 		local colors = tile._RenderSurfaceColorPixels
@@ -386,17 +372,13 @@ return function(deps: any)
 	end
 
 	local function createSolidSurfaceImage(value: number): EditableImage?
-		local ok, imageOrError = pcall(function()
-			return AssetService:CreateEditableImage({
-				Size = Vector2.new(1, 1),
-			})
-		end)
+		local img, imgErr = deps.createEditableImage(true)
 
-		if not ok or imageOrError == nil then
+		if img == nil then
 			return nil
 		end
 
-		local image = imageOrError :: EditableImage
+		local image = img :: EditableImage
 		local byteValue = math.clamp(math.floor(value * 255 + 0.5), 0, 255)
 		local pixels = buffer.create(SURFACE_IMAGE_PIXEL_BYTES)
 
@@ -405,11 +387,12 @@ return function(deps: any)
 		buffer.writeu8(pixels, 2, byteValue)
 		buffer.writeu8(pixels, 3, 255)
 
-		local writeOk = pcall(function()
+		-- Write pixels; if this errors, treat as failed image creation.
+		local okWrite, writeErr = pcall(function()
 			image:WritePixelsBuffer(Vector2.zero, Vector2.new(1, 1), pixels)
 		end)
 
-		if not writeOk then
+		if not okWrite then
 			pcall(function()
 				image:Destroy()
 			end)
@@ -440,12 +423,7 @@ return function(deps: any)
 		local unusedImagesCleared = (needsColorMap or tile._SurfaceImage == nil)
 			and (needsNormalMap or tile._SurfaceNormalImage == nil)
 
-		if
-			tile._SurfaceAppearance ~= nil
-			and colorReady
-			and normalReady
-			and unusedImagesCleared
-		then
+		if tile._SurfaceAppearance ~= nil and colorReady and normalReady and unusedImagesCleared then
 			return true
 		end
 
@@ -475,34 +453,44 @@ return function(deps: any)
 		local roughnessImage: EditableImage? = nil
 
 		if needsColorMap then
-			local ok, imageOrError = pcall(function()
-				return AssetService:CreateEditableImage({
-					Size = Vector2.new(colorResolution, colorResolution),
-				})
-			end)
-
-			if not ok or imageOrError == nil then
-				tile._SurfaceAppearanceSupported = false
-				warnSurfaceColorUnsupported(tile, imageOrError)
-				return false
+			-- If pool already observed as exhausted globally, don't attempt per-tile allocations
+			if deps.isEditableImagePoolExhausted and deps.isEditableImagePoolExhausted() then
+				if not globalEditableImagePoolWarned then
+					warn("[WaterSystem] EditableImage pool globally exhausted; skipping color maps until pool frees up")
+					globalEditableImagePoolWarned = true
+				end
+				image = nil
+				needsColorMap = false
+			else
+				local img, imgErr = deps.createEditableImage(true)
+				if img == nil then
+					-- allocation failed; treat like no color map for this tile
+					image = nil
+					needsColorMap = false
+				else
+					image = img :: EditableImage
+				end
 			end
-
-			image = imageOrError :: EditableImage
 		end
 
 		if needsNormalMap then
-			local ok, imageOrError = pcall(function()
-				return AssetService:CreateEditableImage({
-					Size = Vector2.new(normalResolution, normalResolution),
-				})
-			end)
-
-			if not ok or imageOrError == nil then
-				tile._SurfaceNormalSupported = false
-				warnSurfaceColorUnsupported(tile, imageOrError)
+			if deps.isEditableImagePoolExhausted and deps.isEditableImagePoolExhausted() then
+				-- No pool capacity, disable normal map for now
+				if not globalEditableImagePoolWarned then
+					warn(
+						"[WaterSystem] EditableImage pool globally exhausted; skipping normal maps until pool frees up"
+					)
+					globalEditableImagePoolWarned = true
+				end
 				needsNormalMap = false
 			else
-				normalImage = imageOrError :: EditableImage
+				local img, imgErr = deps.createEditableImage(true)
+				if img == nil then
+					tile._SurfaceNormalSupported = false
+					needsNormalMap = false
+				else
+					normalImage = img :: EditableImage
+				end
 			end
 		end
 
@@ -708,13 +696,20 @@ return function(deps: any)
 			return
 		end
 
-		local normalizedHeight = WaterSurfaceColor.NormalizeHeight(height, tile._WaveLoopMinHeight, tile._WaveLoopMaxHeight)
+		local normalizedHeight =
+			WaterSurfaceColor.NormalizeHeight(height, tile._WaveLoopMinHeight, tile._WaveLoopMaxHeight)
 		if includeFoam then
 			local shoreFoamAlpha = sampleShoreFoamAlpha(tile, localX, localZ, foamTime)
-			local fullSample = WaterSurfaceColor.Sample(surfaceColorConfig, normalizedHeight, shoreFoamAlpha, depthAlpha)
+			local fullSample =
+				WaterSurfaceColor.Sample(surfaceColorConfig, normalizedHeight, shoreFoamAlpha, depthAlpha)
 			local finalColor, finalAlpha = composeSurfaceSample(tile, fullSample, depthAlpha, localX, localZ, foamTime)
 
-			writeRenderSurfaceColor(tile, vertexIndex, finalColor, applyFresnelAlpha(tile._Config, finalAlpha, fresnelAlpha))
+			writeRenderSurfaceColor(
+				tile,
+				vertexIndex,
+				finalColor,
+				applyFresnelAlpha(tile._Config, finalAlpha, fresnelAlpha)
+			)
 		else
 			local waterSample = WaterSurfaceColor.SampleWater(surfaceColorConfig, normalizedHeight, depthAlpha)
 			writeRenderSurfaceColor(
@@ -725,7 +720,6 @@ return function(deps: any)
 			)
 		end
 	end
-
 
 	return {
 		warnSurfaceColorUnsupported = warnSurfaceColorUnsupported,

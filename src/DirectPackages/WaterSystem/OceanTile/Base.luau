@@ -14,6 +14,14 @@ local WAVE_LOOP_HEIGHT_BYTES = Constants.WAVE_LOOP_HEIGHT_BYTES
 local OBSTACLE_IMPACT_VERTEX_BYTES = Constants.OBSTACLE_IMPACT_VERTEX_BYTES
 local VERTEX_BAKE_STATIC_BYTES = Constants.VERTEX_BAKE_STATIC_BYTES
 
+-- Pool configuration
+local EDITABLE_MESH_POOL_TARGET = 20
+local editableMeshPool: { any } = {}
+local editableMeshPoolLookup: { [EditableMesh]: number } = {}
+local editableImagePool: { any } = {}
+local editableImagePoolLookup: { [EditableImage]: number } = {}
+local editableImagePoolExhausted = false
+
 local function smoothstep(edge0: number, edge1: number, x: number): number
 	local t = math.clamp((x - edge0) / math.max(edge1 - edge0, 1e-6), 0, 1)
 	return t * t * (3 - 2 * t)
@@ -147,8 +155,7 @@ local function getGridCoordinates(sourcePart: BasePart, config: TileConfig): (nu
 	if type(explicitResolution) == "number" then
 		local resolution = math.clamp(math.round(explicitResolution), 2, config.Resolution)
 
-		return
-			resolution,
+		return resolution,
 			resolution,
 			createUniformCoordinateBuffer(sourcePart.Size.X, resolution),
 			createUniformCoordinateBuffer(sourcePart.Size.Z, resolution)
@@ -195,7 +202,11 @@ local function createWaterBuffer(sourcePart: BasePart, config: TileConfig): Wate
 	})
 end
 
-local function createDepthMap(sourcePart: BasePart, generatedParent: Instance, config: TileConfig): WaterDepthMap.WaterDepthMap?
+local function createDepthMap(
+	sourcePart: BasePart,
+	generatedParent: Instance,
+	config: TileConfig
+): WaterDepthMap.WaterDepthMap?
 	if not config.DepthMapEnabled then
 		return nil
 	end
@@ -214,7 +225,11 @@ local function createDepthMap(sourcePart: BasePart, generatedParent: Instance, c
 	})
 end
 
-local function createObstacleMap(sourcePart: BasePart, generatedParent: Instance, config: TileConfig): WaterObstacleMap.WaterObstacleMap?
+local function createObstacleMap(
+	sourcePart: BasePart,
+	generatedParent: Instance,
+	config: TileConfig
+): WaterObstacleMap.WaterObstacleMap?
 	if not config.ObstacleMapEnabled then
 		return nil
 	end
@@ -231,12 +246,14 @@ local function createObstacleMap(sourcePart: BasePart, generatedParent: Instance
 		RayHeight = config.ObstacleRayHeight,
 		RayDepth = config.ObstacleRayDepth,
 		InfluenceRadius = config.ObstacleInfluenceRadius,
-		ExcludeInstances = if sourceParent ~= nil then { sourceParent, generatedParent } else { sourcePart, generatedParent },
+		ExcludeInstances = if sourceParent ~= nil
+			then { sourceParent, generatedParent }
+			else { sourcePart, generatedParent },
 		BakeAnchoredObstacles = config.BakeAnchoredObstacles,
 	})
 end
 
-local function createEditableMesh(): (EditableMesh?, string?)
+local function createRawEditableMesh(): (EditableMesh?, string?)
 	local ok, editableMesh = pcall(function()
 		return AssetService:CreateEditableMesh({ FixedSize = false })
 	end)
@@ -252,17 +269,268 @@ local function createEditableMesh(): (EditableMesh?, string?)
 	return editableMesh, nil
 end
 
-local function createMeshPart(editableMesh: EditableMesh): (MeshPart?, string?)
-	local ok, meshPart = pcall(function()
-		return AssetService:CreateMeshPartAsync(Content.fromObject(editableMesh))
+-- Best-effort clear of editable mesh state before reuse/destroy.
+-- Some EditableMesh implementations may expose clearing APIs; call them if present.
+local function clearEditableMeshForReuse(editableMesh: any, tileState: any?)
+	if editableMesh == nil then
+		return
+	end
+
+	pcall(function()
+		if type(editableMesh.Clear) == "function" then
+			editableMesh:Clear()
+		end
+
+		if type(editableMesh.ClearColors) == "function" then
+			editableMesh:ClearColors()
+		end
+
+		if type(editableMesh.ClearUVs) == "function" then
+			editableMesh:ClearUVs()
+		end
+	end)
+end
+
+local function tryCreateMeshPartFromEditable(editableMesh: EditableMesh)
+	local ok, partOrErr = pcall(function()
+		local mp
+		-- try fast-path: assign MeshContent directly
+		local okAssign, assignErr = pcall(function()
+			mp = AssetService:CreateMeshPartAsync(Content.fromObject(editableMesh))
+		end)
+
+		if okAssign then
+			mp.Parent = nil
+			return mp
+		end
+
+		-- direct assignment failed; do not call AssetService here (avoid runtime budget calls)
+		return nil, tostring(assignErr)
 	end)
 
 	if not ok then
-		return nil, tostring(meshPart)
+		return nil, tostring(partOrErr)
 	end
 
+	if partOrErr == nil then
+		return nil, "failed to create MeshPart from editable mesh"
+	end
+
+	return partOrErr
+end
+
+local function warmEditableMeshPool()
+	-- Interleaved warm-up for EditableMesh and EditableImage to avoid
+	-- exhausting a shared AssetService budget by creating many of one
+	-- resource type before the other. Stop the loop on first failure.
+	warn("[WaterSystem] EditableMesh pool warm-up starting, target=" .. tostring(EDITABLE_MESH_POOL_TARGET))
+	for i = 1, EDITABLE_MESH_POOL_TARGET do
+		local editableMesh, meshErr = createRawEditableMesh()
+
+		if editableMesh == nil then
+			warn(`[WaterSystem] EditableMesh pool warm: failed to create mesh {i}: {tostring(meshErr)}`)
+			warn(debug.traceback())
+			break
+		end
+
+		local meshPart = nil
+		local mp, mpErr = tryCreateMeshPartFromEditable(editableMesh)
+
+		if mp ~= nil then
+			meshPart = mp
+			meshPart.Parent = nil
+		else
+			-- fast-path assignment failed (likely plugin capability). Try AssetService creation once
+			local okCreate, created = pcall(function()
+				return AssetService:CreateMeshPartAsync(Content.fromObject(editableMesh))
+			end)
+			if okCreate and created ~= nil then
+				meshPart = created
+				meshPart.Parent = nil
+			else
+				meshPart = nil
+			end
+		end
+
+		table.insert(editableMeshPool, {
+			EditableMesh = editableMesh,
+			MeshPart = meshPart,
+			InUse = false,
+		})
+		editableMeshPoolLookup[editableMesh] = #editableMeshPool
+		warn(
+			`[WaterSystem] EditableMesh pool slot {#editableMeshPool} created (mesh={tostring(editableMesh)}, meshPart={tostring(
+				meshPart
+			)})`
+		)
+
+		-- Now attempt to create one EditableImage paired with this mesh
+		local okImg, editableImage = pcall(function()
+			return AssetService:CreateEditableImage()
+		end)
+
+		if not okImg or editableImage == nil then
+			warn(
+				`[WaterSystem] EditableImage pool warm: failed to create image for slot {i}: {tostring(editableImage)}`
+			)
+			warn(debug.traceback())
+			break
+		end
+
+		table.insert(editableImagePool, {
+			EditableImage = editableImage,
+			InUse = false,
+		})
+		editableImagePoolLookup[editableImage] = #editableImagePool
+	end
+end
+
+local function createEditableMesh(onlyFromPool: boolean?): (EditableMesh?, MeshPart?, string?)
+	for slotIndex, entry in ipairs(editableMeshPool) do
+		if not entry.InUse and entry.EditableMesh ~= nil then
+			entry.InUse = true
+			editableMeshPoolLookup[entry.EditableMesh] = slotIndex
+			warn(
+				`[WaterSystem] createEditableMesh: returning pooled slot {slotIndex} (mesh={tostring(entry.EditableMesh)})`
+			)
+			return entry.EditableMesh, entry.MeshPart, nil
+		end
+	end
+
+	if onlyFromPool then
+		warn(
+			`[WaterSystem] createEditableMesh: pool exhausted ({#editableMeshPool}/{EDITABLE_MESH_POOL_TARGET}) — onlyFromPool requested`
+		)
+		warn(debug.traceback())
+		return nil, nil, `[WaterSystem] EditableMesh pool exhausted ({#editableMeshPool}/{EDITABLE_MESH_POOL_TARGET})`
+	end
+
+	-- Pool exhausted: attempt non-pooled creation
+	local fallback, fallbackErr = createRawEditableMesh()
+
+	if fallback == nil then
+		warn(
+			"[WaterSystem] createEditableMesh: non-pooled fallback CreateEditableMesh failed: " .. tostring(fallbackErr)
+		)
+		return nil,
+			nil,
+			`[WaterSystem] EditableMesh pool exhausted ({#editableMeshPool}/{EDITABLE_MESH_POOL_TARGET}): {tostring(
+				fallbackErr
+			)}`
+	end
+
+	local fallbackMeshPart, fallbackMeshPartErr = tryCreateMeshPartFromEditable(fallback)
+
+	if fallbackMeshPart == nil then
+		-- leave nil, caller will handle lack of meshpart
+	end
+
+	return fallback, fallbackMeshPart, nil
+end
+
+local function releaseEditableMesh(editableMesh: EditableMesh, tileState: any?): boolean
+	local slotIndex = editableMeshPoolLookup[editableMesh]
+
+	if slotIndex == nil then
+		-- non-pooled: try to clear and destroy
+		pcall(function()
+			clearEditableMeshForReuse(editableMesh, tileState)
+		end)
+		pcall(function()
+			editableMesh:Destroy()
+		end)
+		return true
+	end
+
+	local entry = editableMeshPool[slotIndex]
+	if entry == nil then
+		editableMeshPoolLookup[editableMesh] = nil
+		return false
+	end
+
+	entry.InUse = false
+	-- keep entry.EditableMesh and entry.MeshPart for reuse
+	return true
+end
+
+local function createEditableImage(onlyFromPool: boolean?): (EditableImage?, string?)
+	-- Return pooled EditableImage only if requested; never create at runtime
+	for slotIndex, entry in ipairs(editableImagePool) do
+		if not entry.InUse and entry.EditableImage ~= nil then
+			entry.InUse = true
+			editableImagePoolLookup[entry.EditableImage] = slotIndex
+			-- Reset exhaustion flag when we successfully allocate from pool
+			editableImagePoolExhausted = false
+			return entry.EditableImage, nil
+		end
+	end
+
+	if onlyFromPool then
+		editableImagePoolExhausted = true
+		return nil, `[WaterSystem] EditableImage pool exhausted ({#editableImagePool})`
+	end
+
+	-- Non-pooled creation allowed only when caller explicitly permits it
+	local ok, imgOrErr = pcall(function()
+		return AssetService:CreateEditableImage()
+	end)
+
+	if not ok or imgOrErr == nil then
+		return nil, tostring(imgOrErr)
+	end
+
+	return imgOrErr, nil
+end
+
+local function releaseEditableImage(editableImage: EditableImage): boolean
+	local slotIndex = editableImagePoolLookup[editableImage]
+
+	if slotIndex == nil then
+		pcall(function()
+			editableImage:Destroy()
+		end)
+		return true
+	end
+
+	local entry = editableImagePool[slotIndex]
+	if entry == nil then
+		editableImagePoolLookup[editableImage] = nil
+		return false
+	end
+
+	entry.InUse = false
+	-- pool now has a free slot; clear exhausted flag so future callers may attempt to allocate
+	editableImagePoolExhausted = false
+	return true
+end
+
+local function createMeshPart(editableMesh: EditableMesh?): (MeshPart?, string?)
+	-- If no editable mesh provided, fall back to a plain MeshPart instance.
+	if editableMesh == nil then
+		local ok, partOrErr = pcall(function()
+			return Instance.new("MeshPart")
+		end)
+
+		if not ok then
+			return nil, tostring(partOrErr)
+		end
+
+		return partOrErr, nil
+	end
+
+	local meshPart, err = tryCreateMeshPartFromEditable(editableMesh)
+
 	if meshPart == nil then
-		return nil, "AssetService:CreateMeshPartAsync returned nil"
+		-- If we couldn't assign MeshContent, fall back to a plain MeshPart instance
+		local ok, partOrErr = pcall(function()
+			return Instance.new("MeshPart")
+		end)
+
+		if not ok then
+			return nil, tostring(partOrErr)
+		end
+
+		return partOrErr, nil
 	end
 
 	return meshPart, nil
@@ -329,10 +597,19 @@ local function isWorldPositionNearCamera(worldPosition: Vector3, maxDistance: nu
 		return true
 	end
 
-	return (Vector3.new(worldPosition.X, 0, worldPosition.Z) - Vector3.new(camera.CFrame.Position.X, 0, camera.CFrame.Position.Z)).Magnitude <= maxDistance
+	return (Vector3.new(worldPosition.X, 0, worldPosition.Z) - Vector3.new(
+		camera.CFrame.Position.X,
+		0,
+		camera.CFrame.Position.Z
+	)).Magnitude <= maxDistance
 end
 
-local function wavePositionOffset(frameIndex: number, vertexIndex: number, vertexCount: number, component: number): number
+local function wavePositionOffset(
+	frameIndex: number,
+	vertexIndex: number,
+	vertexCount: number,
+	component: number
+): number
 	return (frameIndex * vertexCount + (vertexIndex - 1)) * WAVE_LOOP_POSITION_BYTES + component * 4
 end
 
@@ -347,6 +624,11 @@ end
 local function vertexBakeStaticOffset(vertexIndex: number, component: number): number
 	return (vertexIndex - 1) * VERTEX_BAKE_STATIC_BYTES + component * 4
 end
+
+-- Warm the pool once at module load. Best-effort; stop on first failure.
+pcall(function()
+	warmEditableMeshPool()
+end)
 
 return {
 	smoothstep = smoothstep,
@@ -364,6 +646,21 @@ return {
 	createDepthMap = createDepthMap,
 	createObstacleMap = createObstacleMap,
 	createEditableMesh = createEditableMesh,
+	getEditableMeshPoolAvailableCount = function()
+		local n = 0
+		for _, entry in ipairs(editableMeshPool) do
+			if not entry.InUse and entry.EditableMesh ~= nil then
+				n += 1
+			end
+		end
+		return n
+	end,
+	createEditableImage = createEditableImage,
+	isEditableImagePoolExhausted = function()
+		return editableImagePoolExhausted
+	end,
+	releaseEditableMesh = releaseEditableMesh,
+	releaseEditableImage = releaseEditableImage,
 	createMeshPart = createMeshPart,
 	gridIndex = gridIndex,
 	getAxisCell = getAxisCell,

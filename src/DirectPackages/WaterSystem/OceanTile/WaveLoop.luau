@@ -35,7 +35,10 @@ return function(deps: any)
 	local ensureWaveLoop: (InternalOceanTile) -> boolean
 
 	local function getWaveLoopGeometryKey(config: TileConfig): string
-		return `{WAVE_BAKE_VERSION}:{math.clamp(math.round(config.WaveLoopFrames), 2, 240)}:{math.max(config.WaveLoopDuration, 0.25)}:{config.ShallowWaveScale}:{config.DeepWaveScale}:{config.ShallowDepth}:{config.LakeDepth}:{config.OceanDepth}:{config.ObstacleWaveDamping}:{config.FoamNoiseSeed}`
+		return `{WAVE_BAKE_VERSION}:{math.clamp(math.round(config.WaveLoopFrames), 2, 240)}:{math.max(
+			config.WaveLoopDuration,
+			0.25
+		)}:{config.ShallowWaveScale}:{config.DeepWaveScale}:{config.ShallowDepth}:{config.LakeDepth}:{config.OceanDepth}:{config.ObstacleWaveDamping}:{config.FoamNoiseSeed}`
 	end
 
 	local function getWaveLoopKey(config: TileConfig): string
@@ -118,9 +121,13 @@ return function(deps: any)
 			local oceanWeight = lakeToOcean + shallowWeight
 			local lakeWeight = shallowToLake * (1 - lakeToOcean)
 			local deepFactor = smoothstep(config.ShallowDepth, oceanDepth, depth)
-			local obstacleSeed = if vertex.surfaceEnabled then sampleObstacleImpact(tile._ObstacleMap, localX, localZ) else 0
-			local obstacleAttenuation = sampleObstacleAttenuation(tile._ObstacleMap, localX, localZ, config.ObstacleWaveDamping)
-			local depthWaveScale = config.ShallowWaveScale + (config.DeepWaveScale - config.ShallowWaveScale) * deepFactor
+			local obstacleSeed = if vertex.surfaceEnabled
+				then sampleObstacleImpact(tile._ObstacleMap, localX, localZ)
+				else 0
+			local obstacleAttenuation =
+				sampleObstacleAttenuation(tile._ObstacleMap, localX, localZ, config.ObstacleWaveDamping)
+			local depthWaveScale = config.ShallowWaveScale
+				+ (config.DeepWaveScale - config.ShallowWaveScale) * deepFactor
 			local waveScale = depthWaveScale * obstacleAttenuation * vertex.waveInfluence
 			local sampleWorldX = baseWorld.X
 			local sampleWorldZ = baseWorld.Z
@@ -130,9 +137,13 @@ return function(deps: any)
 			buffer.writef32(static, vertexBakeStaticOffset(vertexIndex, VERTEX_STATIC_WAVE_SCALE), waveScale)
 			buffer.writef32(static, vertexBakeStaticOffset(vertexIndex, VERTEX_STATIC_OCEAN_WEIGHT), oceanWeight)
 			buffer.writef32(static, vertexBakeStaticOffset(vertexIndex, VERTEX_STATIC_LAKE_WEIGHT), lakeWeight)
-			buffer.writef32(static, vertexBakeStaticOffset(vertexIndex, VERTEX_STATIC_SHALLOW_WEIGHT), 0)
+			buffer.writef32(static, vertexBakeStaticOffset(vertexIndex, VERTEX_STATIC_SHALLOW_WEIGHT), shallowWeight)
 
-			if vertex.surfaceEnabled and obstacleSeed >= 0.55 and obstacleVertexCount < MAX_OBSTACLE_IMPACT_VERTICES then
+			if
+				vertex.surfaceEnabled
+				and obstacleSeed >= 0.55
+				and obstacleVertexCount < MAX_OBSTACLE_IMPACT_VERTICES
+			then
 				obstacleVertexCount += 1
 				buffer.writeu16(obstacleVertices, obstacleImpactVertexOffset(obstacleVertexCount), vertexIndex)
 			end
@@ -166,15 +177,29 @@ return function(deps: any)
 				local oceanWeight = buffer.readf32(static, staticOffset + VERTEX_STATIC_OCEAN_WEIGHT * 4)
 				local lakeWeight = buffer.readf32(static, staticOffset + VERTEX_STATIC_LAKE_WEIGHT * 4)
 				local shallowWeight = buffer.readf32(static, staticOffset + VERTEX_STATIC_SHALLOW_WEIGHT * 4)
-				local displacementX, sampleHeight, displacementZ, _sampleFoam =
-					spectrum:SampleBakedWeighted3XZ(baseWorldX, baseWorldZ, bakeTime, 1, oceanWeight, lakeWeight, shallowWeight)
+				local displacementX, sampleHeight, displacementZ, _sampleFoam = spectrum:SampleBakedWeighted3XZ(
+					baseWorldX,
+					baseWorldZ,
+					bakeTime,
+					1,
+					oceanWeight,
+					lakeWeight,
+					shallowWeight
+				)
 				local loopProgress = frameIndex / frames
 				local seamStart = 1 - WAVE_LOOP_SEAM_FRACTION
 
 				if loopProgress >= seamStart then
 					local seamAlpha = smoothstep(seamStart, 1, loopProgress)
-					local previousX, previousHeight, previousZ, _previousFoam =
-						spectrum:SampleBakedWeighted3XZ(baseWorldX, baseWorldZ, bakeTime - duration, 1, oceanWeight, lakeWeight, shallowWeight)
+					local previousX, previousHeight, previousZ, _previousFoam = spectrum:SampleBakedWeighted3XZ(
+						baseWorldX,
+						baseWorldZ,
+						bakeTime - duration,
+						1,
+						oceanWeight,
+						lakeWeight,
+						shallowWeight
+					)
 
 					displacementX += (previousX - displacementX) * seamAlpha
 					sampleHeight += (previousHeight - sampleHeight) * seamAlpha
@@ -182,7 +207,8 @@ return function(deps: any)
 				end
 
 				local waveScale = buffer.readf32(static, staticOffset + VERTEX_STATIC_WAVE_SCALE * 4)
-				local delta = baseCFrame:VectorToObjectSpace(Vector3.new(displacementX, sampleHeight, displacementZ) * waveScale)
+				local delta =
+					baseCFrame:VectorToObjectSpace(Vector3.new(displacementX, sampleHeight, displacementZ) * waveScale)
 				local positionOffset = wavePositionOffset(frameIndex, vertexIndex, vertexCount, 0)
 
 				buffer.writef32(positions, positionOffset, delta.X)
@@ -298,8 +324,7 @@ return function(deps: any)
 		local ay = buffer.readf32(positions, offsetA + 4)
 		local az = buffer.readf32(positions, offsetA + 8)
 
-		return
-			ax + (buffer.readf32(positions, offsetB) - ax) * alpha,
+		return ax + (buffer.readf32(positions, offsetB) - ax) * alpha,
 			ay + (buffer.readf32(positions, offsetB + 4) - ay) * alpha,
 			az + (buffer.readf32(positions, offsetB + 8) - az) * alpha
 	end
@@ -314,14 +339,8 @@ return function(deps: any)
 		end
 
 		local frameA, frameB, alpha = getWaveLoopFrame(tile, time)
-		local dx, dy, dz = readWaveLoopVertex(
-			positions,
-			frameA,
-			frameB,
-			alpha,
-			math.max(tile._WaveLoopFrameStride, 1),
-			vertexIndex
-		)
+		local dx, dy, dz =
+			readWaveLoopVertex(positions, frameA, frameB, alpha, math.max(tile._WaveLoopFrameStride, 1), vertexIndex)
 
 		return Vector3.new(dx, dy, dz)
 	end
@@ -396,7 +415,6 @@ return function(deps: any)
 
 		return a + (b - a) * tz
 	end
-
 
 	return {
 		getWaveLoopGeometryKey = getWaveLoopGeometryKey,

@@ -60,6 +60,7 @@ return function(OceanTileClass: any, deps: any)
 	local isWorldPositionNearCamera = deps.isWorldPositionNearCamera
 	local cframeWithUp = deps.cframeWithUp
 	local getVolumeDepth = deps.getVolumeDepth
+	local releaseEditableMesh = deps.releaseEditableMesh
 	local destroySurfaceAppearance = deps.destroySurfaceAppearance
 
 	function OceanTileClass:_SetFlat()
@@ -98,7 +99,11 @@ return function(OceanTileClass: any, deps: any)
 
 		if distance > self._Config.FadeStartDistance then
 			distanceFactor = math.clamp(
-				1 - ((distance - self._Config.FadeStartDistance) / math.max(self._Config.MaxDistance - self._Config.FadeStartDistance, 1)),
+				1
+					- (
+						(distance - self._Config.FadeStartDistance)
+						/ math.max(self._Config.MaxDistance - self._Config.FadeStartDistance, 1)
+					),
 				0,
 				1
 			)
@@ -204,18 +209,14 @@ return function(OceanTileClass: any, deps: any)
 			local dz = 0
 
 			if positions ~= nil then
-				dx, dy, dz = readWaveLoopVertex(
-					positions,
-					frameA,
-					frameB,
-					frameAlpha,
-					vertexCount,
-					vertexIndex
-				)
+				dx, dy, dz = readWaveLoopVertex(positions, frameA, frameB, frameAlpha, vertexCount, vertexIndex)
 			end
 
 			local baseLocal = vertex.baseLocal
-			local interactiveHeight = if interactiveBufferActive and waterBuffer ~= nil and vertex.surfaceEnabled and lodLevel == RING_LEVEL_NEAR
+			local interactiveHeight = if interactiveBufferActive
+					and waterBuffer ~= nil
+					and vertex.surfaceEnabled
+					and lodLevel == RING_LEVEL_NEAR
 				then waterBuffer:SampleHeight(baseLocal.X, baseLocal.Z)
 				else 0
 			local vertexWaveScale = vertexDetail * vertexDistanceFactor
@@ -341,7 +342,8 @@ return function(OceanTileClass: any, deps: any)
 			and self._StageDetail > 0.05
 		local surfaceEffectsActive = self._StageDistance <= self._Config.FoamDistance and self._StageDetail > 0.35
 
-		if self._Config.StaticObstacleSplashEnabled
+		if
+			self._Config.StaticObstacleSplashEnabled
 			and self._SplashEmitter ~= nil
 			and surfaceEffectsActive
 			and physicsActive
@@ -357,7 +359,10 @@ return function(OceanTileClass: any, deps: any)
 				return
 			end
 
-			local obstacleIndex = (math.floor(time / math.max(self._Config.StaticObstacleSplashInterval, 0.01)) % self._ObstacleImpactVertexCount) + 1
+			local obstacleIndex = (
+				math.floor(time / math.max(self._Config.StaticObstacleSplashInterval, 0.01))
+				% self._ObstacleImpactVertexCount
+			) + 1
 			local vertexIndex = buffer.readu16(obstacleVertices, obstacleImpactVertexOffset(obstacleIndex))
 			local vertex = self._Vertices[vertexIndex]
 
@@ -369,8 +374,9 @@ return function(OceanTileClass: any, deps: any)
 
 				if ringDistance <= self._Config.Lod0Radius then
 					local bakedDelta = sampleWaveLoop(self, vertexIndex, time)
-					local worldPosition =
-						self.BaseCFrame:PointToWorldSpace(vertex.baseLocal + bakedDelta * self._StageDetail * self._StageDistanceFactor)
+					local worldPosition = self.BaseCFrame:PointToWorldSpace(
+						vertex.baseLocal + bakedDelta * self._StageDetail * self._StageDistanceFactor
+					)
 
 					self:EmitSplash(worldPosition, 0.34, 3.5)
 				end
@@ -446,7 +452,11 @@ return function(OceanTileClass: any, deps: any)
 			self._RenderSurfaceColorDirty = false
 		end
 
-		if self._RenderSurfaceTextureDirty and self._SurfaceImage ~= nil and self._RenderSurfaceTexturePixels ~= nil then
+		if
+			self._RenderSurfaceTextureDirty
+			and self._SurfaceImage ~= nil
+			and self._RenderSurfaceTexturePixels ~= nil
+		then
 			local resolution = self._RenderSurfaceTextureResolution
 			local pixels = self._RenderSurfaceTexturePixels
 			local image = self._SurfaceImage :: EditableImage
@@ -463,7 +473,11 @@ return function(OceanTileClass: any, deps: any)
 			self._RenderSurfaceTextureDirty = false
 		end
 
-		if self._RenderSurfaceNormalDirty and self._SurfaceNormalImage ~= nil and self._RenderSurfaceNormalPixels ~= nil then
+		if
+			self._RenderSurfaceNormalDirty
+			and self._SurfaceNormalImage ~= nil
+			and self._RenderSurfaceNormalPixels ~= nil
+		then
 			local resolution = self._RenderSurfaceNormalResolution
 			local pixels = self._RenderSurfaceNormalPixels
 			local image = self._SurfaceNormalImage :: EditableImage
@@ -566,10 +580,14 @@ return function(OceanTileClass: any, deps: any)
 		end
 	end
 
-	function OceanTileClass:AddFoam(_worldPosition: Vector3, _radius: number, _amount: number)
-	end
+	function OceanTileClass:AddFoam(_worldPosition: Vector3, _radius: number, _amount: number) end
 
-	function OceanTileClass:MoveSphere(oldWorldCenter: Vector3, newWorldCenter: Vector3, radius: number, strengthScale: number?)
+	function OceanTileClass:MoveSphere(
+		oldWorldCenter: Vector3,
+		newWorldCenter: Vector3,
+		radius: number,
+		strengthScale: number?
+	)
 		local waterBuffer = self._WaterBuffer
 
 		if waterBuffer == nil or not isWorldPositionNearCamera(newWorldCenter, self._Config.PhysicsDistance) then
@@ -595,9 +613,7 @@ return function(OceanTileClass: any, deps: any)
 		end
 
 		local localPosition = self.BaseCFrame:PointToObjectSpace(worldPosition)
-		local localDirection = if direction ~= nil
-			then self.BaseCFrame:VectorToObjectSpace(direction)
-			else Vector3.zero
+		local localDirection = if direction ~= nil then self.BaseCFrame:VectorToObjectSpace(direction) else Vector3.zero
 		local emitUp = if localDirection.Magnitude > 0.001
 			then (Vector3.yAxis + localDirection.Unit * 0.35).Unit
 			else Vector3.yAxis
@@ -663,7 +679,8 @@ return function(OceanTileClass: any, deps: any)
 
 		local surfaceHeight = self:GetHeightAt(worldPosition, time, 1) + (surfacePadding or 0)
 		local bottomLocalY = -getVolumeDepth(self, localPosition.X, localPosition.Z) - (bottomPadding or 0)
-		local bottomWorld = self.BaseCFrame:PointToWorldSpace(Vector3.new(localPosition.X, bottomLocalY, localPosition.Z)).Y
+		local bottomWorld =
+			self.BaseCFrame:PointToWorldSpace(Vector3.new(localPosition.X, bottomLocalY, localPosition.Z)).Y
 
 		return worldPosition.Y <= surfaceHeight and worldPosition.Y >= bottomWorld
 	end
@@ -743,17 +760,49 @@ return function(OceanTileClass: any, deps: any)
 		end
 
 		if self.MeshPart then
-			self.MeshPart:Destroy()
+			if self._PooledMeshPart then
+				pcall(function()
+					self.MeshPart.Parent = nil
+				end)
+			else
+				self.MeshPart:Destroy()
+			end
 		end
 
 		if self.ReflectionMeshPart then
-			self.ReflectionMeshPart:Destroy()
+			if self._PooledReflectionMeshPart then
+				pcall(function()
+					self.ReflectionMeshPart.Parent = nil
+				end)
+			else
+				self.ReflectionMeshPart:Destroy()
+			end
 		end
 
-		if self.EditableMesh then
-			pcall(function()
-				self.EditableMesh:Destroy()
-			end)
+		if self.EditableMesh and not self._EditableMeshReleased then
+			if releaseEditableMesh ~= nil then
+				pcall(function()
+					releaseEditableMesh(self.EditableMesh, self)
+				end)
+			else
+				pcall(function()
+					self.EditableMesh:Destroy()
+				end)
+			end
+			self._EditableMeshReleased = true
+		end
+
+		if self.ReflectionEditableMesh and not self._ReflectionEditableMeshReleased then
+			if releaseEditableMesh ~= nil then
+				pcall(function()
+					releaseEditableMesh(self.ReflectionEditableMesh, self)
+				end)
+			else
+				pcall(function()
+					self.ReflectionEditableMesh:Destroy()
+				end)
+			end
+			self._ReflectionEditableMeshReleased = true
 		end
 	end
 
