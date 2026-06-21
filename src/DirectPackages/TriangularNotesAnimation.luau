@@ -1,1 +1,0 @@
-return require(script.Parent.MaterialAnimation.Workspaces.TriangularNotesAnimation)
